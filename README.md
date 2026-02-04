@@ -126,6 +126,19 @@ Get reviews from both providers:
 
 Second Opinion implements multiple layers of protection:
 
+### What Data Is Sent
+
+When you use Second Opinion, the following data may be sent to the external LLM (Gemini or OpenAI):
+
+- **File contents**: Source code from your project and any explicitly included files
+- **Conversation context**: A summary of your Claude Code session (what you asked, not your full chat history)
+- **File metadata**: File paths relative to your project
+
+The tool does NOT send:
+- Your API keys
+- System files or shell history
+- Files blocked by sensitive path patterns
+
 ### Sensitive Path Blocking
 
 The following paths are always blocked, even when explicitly requested:
@@ -138,6 +151,14 @@ The following paths are always blocked, even when explicitly requested:
 - Auth files (`.netrc`, `.npmrc`, `.pypirc`)
 - Private keys (`*.pem`, `*.key`, `id_rsa`, `id_ed25519`)
 - Service account credentials
+- Environment files (`.env`, `.env.local`, `.env.production`)
+- Terraform secrets (`.tfvars`, `terraform.tfstate`)
+- Kubernetes secrets (`secret.yaml`, `secret.yml`)
+- Shell history (`.bash_history`, `.zsh_history`)
+
+### External File Protection
+
+By default, files outside your project directory are blocked. If you need to include external files, you must explicitly set `allowExternalFiles: true`. This prevents accidental exfiltration of files from other projects or system locations.
 
 ### Symlink Protection
 
@@ -146,6 +167,15 @@ All paths are resolved via `realpathSync()` before reading. A symlink pointing t
 ### Output Directory Validation
 
 Reviews are only written within your project directory. Path traversal attempts (e.g., `../../../etc/passwd`) are rejected.
+
+### Egress Audit Trail
+
+Every review creates a companion `.egress.json` file that records:
+- Exactly which files were sent to the external LLM
+- Which files were blocked and why
+- Timestamp and provider information
+
+This allows you to audit what data left your system.
 
 ### API Key Safety
 
@@ -163,6 +193,8 @@ claude mcp add second-opinion \
   -e GEMINI_API_KEY="$(cat ~/.secrets/gemini-key)" \
   -- npx second-opinion-mcp
 ```
+
+**Never paste API keys directly in Claude Code chat.** Keys in chat messages could be logged or sent to external providers.
 
 ## Configuration
 
@@ -225,6 +257,8 @@ When calling the MCP tool directly:
 | `sessionId` | No | latest | Claude Code session ID |
 | `sessionName` | No | auto | Name for output file |
 | `includeFiles` | No | — | Additional files/folders to include |
+| `allowExternalFiles` | No | `false` | Allow files outside project (required for external paths in includeFiles) |
+| `dryRun` | No | `false` | Preview what would be sent without calling external API |
 | `includeConversation` | No | `true` | Include conversation context |
 | `includeDependencies` | No | `true` | Include imported files |
 | `includeDependents` | No | `true` | Include importing files |

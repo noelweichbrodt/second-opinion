@@ -112,6 +112,8 @@ Claude: I'll include the previous review and ask Gemini to evaluate the changes.
 | sessionId | No | latest | Claude Code session ID |
 | sessionName | No | auto | Name for output file |
 | includeFiles | No | - | Additional files/folders to include (supports ~ and relative paths) |
+| allowExternalFiles | No | false | Allow files outside project directory |
+| dryRun | No | false | Preview what would be sent without calling external API |
 | includeConversation | No | true | Include chat context |
 | includeDependencies | No | true | Include imported files |
 | includeDependents | No | true | Include importing files |
@@ -119,6 +121,48 @@ Claude: I'll include the previous review and ask Gemini to evaluate the changes.
 | includeTypes | No | true | Include type definitions |
 | maxTokens | No | 100000 | Context token budget |
 | focusAreas | No | - | Areas to focus on (for code reviews) |
+
+### External Files Confirmation Flow
+
+When the user's request includes files from outside the project (e.g., `~/other-project/file.ts`):
+
+1. **First call with dryRun: true** to preview what would be sent:
+   ```json
+   {
+     "provider": "gemini",
+     "projectPath": "/current/project",
+     "includeFiles": ["~/other-project/src/auth.ts"],
+     "allowExternalFiles": true,
+     "dryRun": true
+   }
+   ```
+
+2. **Show confirmation to user:**
+   ```
+   This will send 15 files from the current project and 2 files from ~/other-project/src to Gemini.
+   External files:
+   - ~/other-project/src/auth.ts
+   - ~/other-project/src/utils.ts
+
+   Proceed? (y/n)
+   ```
+
+3. **If confirmed**, call again without dryRun:
+   ```json
+   {
+     "provider": "gemini",
+     "projectPath": "/current/project",
+     "includeFiles": ["~/other-project/src/auth.ts"],
+     "allowExternalFiles": true
+   }
+   ```
+
+4. **Report results with summary:**
+   ```
+   Review complete! Sent 15 project files and 2 external files to Gemini.
+   Review: second-opinions/security-audit.gemini.review.md
+   Egress manifest: second-opinions/security-audit.gemini.review.egress.json
+   ```
 
 ## Setup
 
