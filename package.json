@@ -12,6 +12,14 @@
     "gpt"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noelweichbrodt/second-opinion.git"
+  },
+  "homepage": "https://github.com/noelweichbrodt/second-opinion#readme",
+  "bugs": {
+    "url": "https://github.com/noelweichbrodt/second-opinion/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {
