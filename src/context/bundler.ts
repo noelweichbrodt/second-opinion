@@ -15,6 +15,7 @@ import {
 } from "./imports.js";
 import { findTestFilesForFiles } from "./tests.js";
 import { findTypeFilesForFiles } from "./types.js";
+import { estimateTokens, BUDGET_ALLOCATION } from "../utils/tokens.js";
 
 /**
  * Expand tilde in paths to home directory
@@ -87,6 +88,9 @@ export interface BlockedFile {
   reason: "sensitive_path" | "outside_project_requires_allowExternalFiles";
 }
 
+/** Maximum directory recursion depth to prevent stack overflow from deep/circular structures */
+const MAX_EXPAND_DEPTH = 10;
+
 /**
  * Expand a path to a list of files (handles directories recursively)
  * Returns object with files and any blocked paths
@@ -94,9 +98,15 @@ export interface BlockedFile {
 function expandPath(
   inputPath: string,
   projectPath: string,
-  options?: { allowExternalFiles?: boolean }
+  options?: { allowExternalFiles?: boolean },
+  depth: number = 0
 ): { files: string[]; blocked: BlockedFile[] } {
   const result = { files: [] as string[], blocked: [] as BlockedFile[] };
+
+  // Guard against excessively deep directory structures
+  if (depth >= MAX_EXPAND_DEPTH) {
+    return result;
+  }
 
   // Expand tilde
   let expandedPath = expandTilde(inputPath);
@@ -189,7 +199,7 @@ function expandPath(
         result.files.push(entryRealPath);
       } else if (entryStat.isDirectory()) {
         // Recursively expand subdirectories
-        const subResult = expandPath(entryRealPath, projectPath, options);
+        const subResult = expandPath(entryRealPath, projectPath, options, depth + 1);
         result.files.push(...subResult.files);
         result.blocked.push(...subResult.blocked);
       }
@@ -253,21 +263,6 @@ export interface ContextBundle {
   };
 }
 
-// Rough token estimation (4 chars per token is a reasonable approximation)
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
-// Budget allocation by category (explicit files get priority, then session, etc.)
-const BUDGET_ALLOCATION = {
-  explicit: 0.15,
-  session: 0.3,
-  git: 0.1,
-  dependency: 0.15,
-  dependent: 0.15,
-  test: 0.1,
-  type: 0.05,
-};
 
 /**
  * Read a file and create a FileEntry
