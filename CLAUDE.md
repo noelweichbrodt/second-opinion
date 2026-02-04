@@ -122,50 +122,36 @@ Claude: I'll include the previous review and ask Gemini to evaluate the changes.
 
 ## Setup
 
-1. Install and build:
-```bash
-cd second-opinion
-npm install
-npm run build
-```
-
-2. Add to Claude Code:
-```bash
-claude mcp add second-opinion -- node /path/to/second-opinion/dist/index.js
-```
-
-3. Set API keys (at least one):
-```bash
-export GEMINI_API_KEY=your-key    # For Gemini
-export OPENAI_API_KEY=your-key    # For GPT
-```
-
-**Security Note:** Avoid pasting API keys directly in the terminal as they may be saved in shell history. Safer alternatives:
+Add to Claude Code with your API key:
 
 ```bash
-# Read from a secure file (recommended)
-export GEMINI_API_KEY=$(cat ~/.secrets/google-api-key)
-
-# Or use a password manager CLI
-export OPENAI_API_KEY=$(op read "op://Private/OpenAI/api-key")
-
-# Or set in the MCP config with file expansion
 claude mcp add second-opinion \
-  -e GEMINI_API_KEY="$(cat ~/.secrets/google-api-key)" \
-  -- node /path/to/second-opinion/dist/index.js
+  -e GEMINI_API_KEY="$(cat ~/.secrets/gemini-key)" \
+  -- npx second-opinion-mcp
 ```
 
-4. Optional: Configure models via environment variables:
+Or with OpenAI:
+
 ```bash
-export GEMINI_MODEL=gemini-2.0-flash-exp  # Default
-export OPENAI_MODEL=gpt-4o                 # Default
+claude mcp add second-opinion \
+  -e OPENAI_API_KEY="$(cat ~/.secrets/openai-key)" \
+  -- npx second-opinion-mcp
 ```
 
-5. Optional: Create global review instructions at `~/.config/second-opinion/second-opinion.md`
+**Security Note:** Avoid pasting API keys directly in the terminal—use file expansion or a password manager as shown above.
+
+Optional: Create global review instructions at `~/.config/second-opinion/second-opinion.md`
 
 ## Configuration
 
-All settings can be configured via environment variables (set with `-e` when adding the MCP server) or in `~/.config/second-opinion/config.json`.
+Set environment variables with `-e` when adding the MCP server:
+
+```bash
+claude mcp add second-opinion \
+  -e GEMINI_API_KEY="$(cat ~/.secrets/gemini-key)" \
+  -e GEMINI_MODEL="gemini-2.0-flash-exp" \
+  -- npx second-opinion-mcp
+```
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -176,11 +162,3 @@ All settings can be configured via environment variables (set with `-e` when add
 | DEFAULT_PROVIDER | gemini | Default provider if not specified |
 | MAX_CONTEXT_TOKENS | 100000 | Token budget for context |
 | REVIEWS_DIR | second-opinions | Output directory for responses |
-
-Example with custom model:
-```bash
-claude mcp add second-opinion \
-  -e OPENAI_API_KEY='your-key' \
-  -e OPENAI_MODEL='gpt-4-turbo' \
-  -- node /path/to/second-opinion/dist/index.js
-```

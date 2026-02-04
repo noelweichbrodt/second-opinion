@@ -7,15 +7,10 @@ Second Opinion is an MCP server that automatically collects context from your Cl
 ## Quick Start
 
 ```bash
-# Clone and build
-git clone https://github.com/your-username/second-opinion.git
-cd second-opinion
-npm install && npm run build
-
-# Add to Claude Code with your API key
+# Add to Claude Code (one command)
 claude mcp add second-opinion \
   -e GEMINI_API_KEY="$(cat ~/.secrets/gemini-key)" \
-  -- node $(pwd)/dist/index.js
+  -- npx second-opinion-mcp
 ```
 
 Then in Claude Code:
@@ -166,7 +161,7 @@ export OPENAI_API_KEY=$(op read "op://Private/OpenAI/api-key")
 # Set via MCP config
 claude mcp add second-opinion \
   -e GEMINI_API_KEY="$(cat ~/.secrets/gemini-key)" \
-  -- node /path/to/second-opinion/dist/index.js
+  -- npx second-opinion-mcp
 ```
 
 ## Configuration

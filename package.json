@@ -1,13 +1,37 @@
 {
-  "name": "second-opinion",
+  "name": "second-opinion-mcp",
   "version": "0.1.0",
-  "description": "MCP server for getting code reviews from Gemini/GPT",
+  "description": "MCP server for getting code reviews from Gemini/GPT in Claude Code",
+  "keywords": [
+    "mcp",
+    "claude",
+    "claude-code",
+    "code-review",
+    "gemini",
+    "openai",
+    "gpt"
+  ],
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "second-opinion-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "scripts",
+    "second-opinion.skill.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "prepublishOnly": "npm run build",
+    "postinstall": "node scripts/install-config.js",
     "install-config": "node scripts/install-config.js"
   },
   "dependencies": {
