@@ -102,6 +102,21 @@ The reviewer sees the same context Claude had, plus related code for full unders
                 items: { type: "string" },
                 description: "Specific areas to focus on",
               },
+              includeFiles: {
+                type: "array",
+                items: { type: "string" },
+                description: "Additional files or folders to include (supports ~ and relative paths)",
+              },
+              allowExternalFiles: {
+                type: "boolean",
+                default: false,
+                description: "Allow including files outside the project directory. Required when includeFiles contains paths outside the project.",
+              },
+              dryRun: {
+                type: "boolean",
+                default: false,
+                description: "If true, return a preview of what would be sent without calling the external API",
+              },
             },
             required: ["provider", "projectPath"],
           },
@@ -123,7 +138,28 @@ The reviewer sees the same context Claude had, plus related code for full unders
       // Execute the review
       const result = await executeReview(input);
 
-      // Return success response
+      // Handle dry run response
+      if (result.dryRun) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  dryRun: true,
+                  provider: result.provider,
+                  summary: result.summary,
+                  totalTokens: result.totalTokens,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      // Return success response for actual review
       return {
         content: [
           {
@@ -132,12 +168,14 @@ The reviewer sees the same context Claude had, plus related code for full unders
               {
                 success: true,
                 reviewFile: result.reviewFile,
+                egressManifestFile: result.egressManifestFile,
                 provider: result.provider,
                 model: result.model,
                 filesReviewed: result.filesReviewed,
                 contextTokens: result.contextTokens,
                 tokensUsed: result.tokensUsed,
-                summary: result.review.substring(0, 500) + (result.review.length > 500 ? "..." : ""),
+                summary: result.summary,
+                reviewPreview: result.review.substring(0, 500) + (result.review.length > 500 ? "..." : ""),
               },
               null,
               2

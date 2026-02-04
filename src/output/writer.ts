@@ -11,6 +11,19 @@ export interface ReviewMetadata {
   task?: string;
 }
 
+export interface EgressSummary {
+  projectFilesSent: number;
+  projectFilePaths: string[];
+  externalFilesSent: number;
+  externalFilePaths: string[];
+  externalLocations: string[];
+  blockedFiles: {
+    path: string;
+    reason: string;
+  }[];
+  provider: string;
+}
+
 /**
  * Generate a slug from a session name
  */
@@ -63,6 +76,30 @@ function deriveTaskSlug(task: string): string {
 }
 
 /**
+ * Generate base filename (without extension) for output files
+ */
+function generateBaseFilename(metadata: ReviewMetadata): string {
+  const sessionSlug = slugify(metadata.sessionName);
+  if (metadata.task) {
+    const taskSlug = deriveTaskSlug(metadata.task);
+    return `${sessionSlug}.${metadata.provider}.${taskSlug}`;
+  }
+  return `${sessionSlug}.${metadata.provider}.review`;
+}
+
+/**
+ * Ensure output directory exists and return its path
+ */
+function ensureOutputDir(projectPath: string, reviewsDir: string): string {
+  validateReviewsDir(reviewsDir);
+  const outputDirPath = path.join(projectPath, reviewsDir);
+  if (!fs.existsSync(outputDirPath)) {
+    fs.mkdirSync(outputDirPath, { recursive: true });
+  }
+  return outputDirPath;
+}
+
+/**
  * Write a review/response to a markdown file
  */
 export function writeReview(
@@ -71,25 +108,8 @@ export function writeReview(
   metadata: ReviewMetadata,
   review: string
 ): string {
-  // Validate reviewsDir before using it
-  validateReviewsDir(reviewsDir);
-
-  // Ensure output directory exists
-  const outputDirPath = path.join(projectPath, reviewsDir);
-  if (!fs.existsSync(outputDirPath)) {
-    fs.mkdirSync(outputDirPath, { recursive: true });
-  }
-
-  // Generate filename based on whether this is a task or review
-  const sessionSlug = slugify(metadata.sessionName);
-  let filename: string;
-  if (metadata.task) {
-    const taskSlug = deriveTaskSlug(metadata.task);
-    filename = `${sessionSlug}.${metadata.provider}.${taskSlug}.md`;
-  } else {
-    filename = `${sessionSlug}.${metadata.provider}.review.md`;
-  }
-  const filePath = path.join(outputDirPath, filename);
+  const outputDirPath = ensureOutputDir(projectPath, reviewsDir);
+  const filePath = path.join(outputDirPath, `${generateBaseFilename(metadata)}.md`);
 
   // Build the document
   const lines: string[] = [];
@@ -155,4 +175,48 @@ export function deriveSessionName(
   }
 
   return fallback;
+}
+
+/**
+ * Write an egress manifest JSON file for audit trail
+ * This records exactly what files were sent to the external LLM
+ */
+export function writeEgressManifest(
+  projectPath: string,
+  reviewsDir: string,
+  metadata: ReviewMetadata,
+  egressData: EgressSummary
+): string {
+  const outputDirPath = ensureOutputDir(projectPath, reviewsDir);
+  const filePath = path.join(outputDirPath, `${generateBaseFilename(metadata)}.egress.json`);
+
+  // Build the manifest
+  const manifest = {
+    timestamp: metadata.timestamp,
+    provider: egressData.provider,
+    model: metadata.model,
+    sessionName: metadata.sessionName,
+    task: metadata.task || null,
+    egress: {
+      projectFiles: {
+        count: egressData.projectFilesSent,
+        paths: egressData.projectFilePaths.map((p) =>
+          path.relative(projectPath, p)
+        ),
+      },
+      externalFiles: {
+        count: egressData.externalFilesSent,
+        paths: egressData.externalFilePaths,
+        locations: egressData.externalLocations,
+      },
+      blockedFiles: egressData.blockedFiles,
+      totalFilesSent:
+        egressData.projectFilesSent + egressData.externalFilesSent,
+    },
+  };
+
+  // Write the file
+  fs.writeFileSync(filePath, JSON.stringify(manifest, null, 2));
+
+  return filePath;
 }

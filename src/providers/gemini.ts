@@ -4,6 +4,7 @@ import {
   ReviewRequest,
   ReviewResponse,
   buildReviewPrompt,
+  getSystemPrompt,
 } from "./base.js";
 
 export class GeminiProvider implements ReviewProvider {
@@ -18,11 +19,7 @@ export class GeminiProvider implements ReviewProvider {
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
     const prompt = buildReviewPrompt(request);
-
-    // Use a more generic system instruction when a custom task is provided
-    const systemInstruction = request.task
-      ? "You are an expert software engineer. Complete the requested task thoroughly and provide clear, actionable output."
-      : "You are an expert software engineer performing a code review. Be thorough, constructive, and actionable.";
+    const systemInstruction = getSystemPrompt(!!request.task);
 
     const model = this.client.getGenerativeModel({
       model: this.model,

@@ -30,24 +30,48 @@ function expandTilde(filePath: string): string {
  * Sensitive paths that should never be included, even when explicitly requested
  */
 const SENSITIVE_PATH_PATTERNS = [
+  // Version control
   /[/\\]\.git[/\\]?/i,
+
+  // SSH and encryption keys
   /[/\\]\.ssh[/\\]?/i,
-  /[/\\]\.aws[/\\]?/i,
   /[/\\]\.gnupg[/\\]?/i,
   /[/\\]\.gpg[/\\]?/i,
-  /[/\\]\.config[/\\](?:gcloud|gh|hub)[/\\]?/i,
-  /[/\\]\.kube[/\\]?/i,
-  /[/\\]\.docker[/\\]config\.json$/i,
-  /[/\\]\.netrc$/i,
-  /[/\\]\.npmrc$/i,
-  /[/\\]\.pypirc$/i,
   /[/\\]id_rsa/i,
   /[/\\]id_ed25519/i,
   /[/\\]id_ecdsa/i,
   /[/\\]\.pem$/i,
   /[/\\]\.key$/i,
+
+  // Cloud provider configs
+  /[/\\]\.aws[/\\]?/i,
+  /[/\\]\.config[/\\](?:gcloud|gh|hub)[/\\]?/i,
+  /[/\\]\.kube[/\\]?/i,
+  /[/\\]\.docker[/\\]config\.json$/i,
+
+  // Package manager auth
+  /[/\\]\.netrc$/i,
+  /[/\\]\.npmrc$/i,
+  /[/\\]\.pypirc$/i,
+
+  // Credential files
   /[/\\]credentials\.json$/i,
   /[/\\]service[-_]?account.*\.json$/i,
+  /[/\\]\.credentials$/i,
+  /secrets\.(json|ya?ml)$/i,
+
+  // Environment files (commonly contain secrets)
+  /[/\\]\.env($|\.[^/\\]*$)/i, // .env, .env.local, .env.production, etc.
+
+  // Terraform/IaC secrets
+  /\.tfvars$/i,
+  /terraform\.tfstate/i,
+
+  // Kubernetes secrets
+  /secret\.ya?ml$/i,
+
+  // Shell history (may contain commands with secrets)
+  /\.(bash|zsh|sh)_history$/i,
 ];
 
 /**
@@ -58,15 +82,21 @@ function isSensitivePath(filePath: string): boolean {
   return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+export interface BlockedFile {
+  path: string;
+  reason: "sensitive_path" | "outside_project_requires_allowExternalFiles";
+}
+
 /**
  * Expand a path to a list of files (handles directories recursively)
- * Returns object with files and any blocked sensitive paths
+ * Returns object with files and any blocked paths
  */
 function expandPath(
   inputPath: string,
-  projectPath: string
-): { files: string[]; blocked: string[] } {
-  const result = { files: [] as string[], blocked: [] as string[] };
+  projectPath: string,
+  options?: { allowExternalFiles?: boolean }
+): { files: string[]; blocked: BlockedFile[] } {
+  const result = { files: [] as string[], blocked: [] as BlockedFile[] };
 
   // Expand tilde
   let expandedPath = expandTilde(inputPath);
@@ -81,7 +111,7 @@ function expandPath(
 
   // Block sensitive paths
   if (isSensitivePath(expandedPath)) {
-    result.blocked.push(expandedPath);
+    result.blocked.push({ path: expandedPath, reason: "sensitive_path" });
     return result;
   }
 
@@ -100,7 +130,16 @@ function expandPath(
 
   // Check the resolved path against sensitive patterns
   if (isSensitivePath(realPath)) {
-    result.blocked.push(expandedPath);
+    result.blocked.push({ path: expandedPath, reason: "sensitive_path" });
+    return result;
+  }
+
+  // Check if file is outside project bounds (unless allowExternalFiles is true)
+  if (!options?.allowExternalFiles && !isWithinProject(realPath, projectPath)) {
+    result.blocked.push({
+      path: expandedPath,
+      reason: "outside_project_requires_allowExternalFiles",
+    });
     return result;
   }
 
@@ -129,7 +168,19 @@ function expandPath(
 
       // Check resolved path for sensitivity
       if (isSensitivePath(entryRealPath)) {
-        result.blocked.push(fullPath);
+        result.blocked.push({ path: fullPath, reason: "sensitive_path" });
+        continue;
+      }
+
+      // Check project bounds for entries too
+      if (
+        !options?.allowExternalFiles &&
+        !isWithinProject(entryRealPath, projectPath)
+      ) {
+        result.blocked.push({
+          path: fullPath,
+          reason: "outside_project_requires_allowExternalFiles",
+        });
         continue;
       }
 
@@ -138,7 +189,7 @@ function expandPath(
         result.files.push(entryRealPath);
       } else if (entryStat.isDirectory()) {
         // Recursively expand subdirectories
-        const subResult = expandPath(entryRealPath, projectPath);
+        const subResult = expandPath(entryRealPath, projectPath, options);
         result.files.push(...subResult.files);
         result.blocked.push(...subResult.blocked);
       }
@@ -157,6 +208,7 @@ export interface BundleOptions {
   includeTests?: boolean;
   includeTypes?: boolean;
   includeFiles?: string[];
+  allowExternalFiles?: boolean;
   maxTokens?: number;
 }
 
@@ -178,7 +230,11 @@ export interface OmittedFile {
   path: string;
   category: FileEntry["category"];
   tokenEstimate: number;
-  reason: "budget_exceeded" | "outside_project" | "sensitive_path";
+  reason:
+    | "budget_exceeded"
+    | "outside_project"
+    | "sensitive_path"
+    | "outside_project_requires_allowExternalFiles";
 }
 
 export interface ContextBundle {
@@ -249,6 +305,7 @@ export async function bundleContext(
     includeTests = true,
     includeTypes = true,
     includeFiles = [],
+    allowExternalFiles = false,
     maxTokens = 100000,
   } = options;
 
@@ -342,15 +399,17 @@ export async function bundleContext(
   if (includeFiles.length > 0) {
     const explicitFiles: FileEntry[] = [];
     for (const inputPath of includeFiles) {
-      const { files: expandedPaths, blocked } = expandPath(inputPath, projectPath);
+      const { files: expandedPaths, blocked } = expandPath(inputPath, projectPath, {
+        allowExternalFiles,
+      });
 
-      // Track blocked sensitive paths
-      for (const blockedPath of blocked) {
+      // Track blocked paths (sensitive or outside project)
+      for (const blockedFile of blocked) {
         bundle.omittedFiles.push({
-          path: blockedPath,
+          path: blockedFile.path,
           category: "explicit",
           tokenEstimate: 0,
-          reason: "sensitive_path",
+          reason: blockedFile.reason,
         });
       }
 
@@ -361,7 +420,7 @@ export async function bundleContext(
         }
       }
     }
-    // Explicit files skip bounds check since user explicitly requested them
+    // Explicit files skip bounds check since expandPath already checked
     addFilesWithBudget(explicitFiles, "explicit", budgets.explicit, { skipBoundsCheck: true });
   }
 
@@ -570,11 +629,24 @@ export function formatBundleAsMarkdown(
       sensitive_path: bundle.omittedFiles.filter(
         (f) => f.reason === "sensitive_path"
       ),
+      outside_project_requires_allowExternalFiles: bundle.omittedFiles.filter(
+        (f) => f.reason === "outside_project_requires_allowExternalFiles"
+      ),
     };
 
     if (byReason.sensitive_path.length > 0) {
       lines.push("**Blocked (sensitive path):**");
       for (const file of byReason.sensitive_path) {
+        lines.push(`- ${file.path}`);
+      }
+      lines.push("");
+    }
+
+    if (byReason.outside_project_requires_allowExternalFiles.length > 0) {
+      lines.push(
+        "**Blocked (outside project - set allowExternalFiles: true to include):**"
+      );
+      for (const file of byReason.outside_project_requires_allowExternalFiles) {
         lines.push(`- ${file.path}`);
       }
       lines.push("");

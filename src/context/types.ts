@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { glob } from "glob";
+import { resolveImportPath } from "./imports.js";
 
 // Patterns for type imports
 const TYPE_IMPORT_PATTERNS = [
@@ -102,41 +103,11 @@ export async function findTypeFilesForFiles(
       let match;
       while ((match = allImportPattern.exec(content)) !== null) {
         const importPath = match[1];
+        const resolved = resolveImportPath(importPath, file, projectPath);
 
-        // Skip node_modules
-        if (!importPath.startsWith(".") && !importPath.startsWith("@/")) {
-          continue;
-        }
-
-        // Resolve the import
-        const fromDir = path.dirname(file);
-        let targetPath: string;
-
-        if (importPath.startsWith("@/")) {
-          targetPath = path.join(projectPath, "src", importPath.slice(2));
-        } else {
-          targetPath = path.resolve(fromDir, importPath);
-        }
-
-        // Check if this resolves to a type file
-        const extensions = [".ts", ".tsx", ".js", ".jsx", ".d.ts"];
-        for (const ext of extensions) {
-          const candidate = targetPath.endsWith(ext)
-            ? targetPath
-            : targetPath + ext;
-
-          if (typeFileSet.has(candidate) || isTypeFile(candidate)) {
-            if (fs.existsSync(candidate) && !files.includes(candidate)) {
-              typeFiles.add(candidate);
-            }
-          }
-
-          // Also check index files
-          const indexCandidate = path.join(targetPath, "index" + ext);
-          if (typeFileSet.has(indexCandidate) || isTypeFile(indexCandidate)) {
-            if (fs.existsSync(indexCandidate) && !files.includes(indexCandidate)) {
-              typeFiles.add(indexCandidate);
-            }
+        if (resolved && (typeFileSet.has(resolved) || isTypeFile(resolved))) {
+          if (!files.includes(resolved)) {
+            typeFiles.add(resolved);
           }
         }
       }

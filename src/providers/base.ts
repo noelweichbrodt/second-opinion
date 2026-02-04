@@ -18,6 +18,15 @@ export interface ReviewProvider {
 }
 
 /**
+ * Get the system prompt based on whether a custom task is provided
+ */
+export function getSystemPrompt(hasTask: boolean): string {
+  return hasTask
+    ? "You are an expert software engineer. Complete the requested task thoroughly and provide clear, actionable output."
+    : "You are an expert software engineer performing a code review. Be thorough, constructive, and actionable.";
+}
+
+/**
  * Build the full prompt for the LLM
  */
 export function buildReviewPrompt(request: ReviewRequest): string {

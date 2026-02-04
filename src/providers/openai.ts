@@ -4,6 +4,7 @@ import {
   ReviewRequest,
   ReviewResponse,
   buildReviewPrompt,
+  getSystemPrompt,
 } from "./base.js";
 
 export class OpenAIProvider implements ReviewProvider {
@@ -18,11 +19,7 @@ export class OpenAIProvider implements ReviewProvider {
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
     const prompt = buildReviewPrompt(request);
-
-    // Use a more generic system prompt when a custom task is provided
-    const systemPrompt = request.task
-      ? "You are an expert software engineer. Complete the requested task thoroughly and provide clear, actionable output."
-      : "You are an expert software engineer performing a code review. Be thorough, constructive, and actionable.";
+    const systemPrompt = getSystemPrompt(!!request.task);
 
     const response = await this.client.chat.completions.create({
       model: this.model,

@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import * as path from "path";
 
 export interface GitChanges {
@@ -89,12 +89,16 @@ export function getFileDiff(
 
   try {
     const relativePath = path.relative(projectPath, filePath);
-    const diff = execSync(`git diff HEAD -- "${relativePath}"`, {
+    // Use spawnSync with argument array to prevent command injection
+    const result = spawnSync("git", ["diff", "HEAD", "--", relativePath], {
       cwd: projectPath,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
-    return diff || null;
+    if (result.error || result.status !== 0) {
+      return null;
+    }
+    return result.stdout || null;
   } catch {
     return null;
   }

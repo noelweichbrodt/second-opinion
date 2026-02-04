@@ -2,12 +2,19 @@ import * as fs from "fs";
 import * as path from "path";
 import { z } from "zod";
 import { loadConfig, loadReviewInstructions } from "../config.js";
-import { bundleContext, formatBundleAsMarkdown } from "../context/index.js";
+import {
+  bundleContext,
+  formatBundleAsMarkdown,
+  ContextBundle,
+} from "../context/index.js";
+import { isWithinProject } from "../context/imports.js";
 import { createProvider, ProviderName } from "../providers/index.js";
 import {
   writeReview,
+  writeEgressManifest,
   deriveSessionName,
   ReviewMetadata,
+  EgressSummary,
 } from "../output/writer.js";
 
 /**
@@ -59,6 +66,12 @@ export const SecondOpinionInputSchema = z.object({
     .array(z.string())
     .optional()
     .describe("Additional files or folders to include (supports ~ and relative paths)"),
+  allowExternalFiles: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Allow including files outside the project directory. Required when includeFiles contains paths outside the project. Use with caution as these files will be sent to the external LLM."
+    ),
   includeConversation: z
     .boolean()
     .default(true)
@@ -99,24 +112,81 @@ export const SecondOpinionInputSchema = z.object({
     .array(z.string())
     .optional()
     .describe("Specific areas to focus on (for code reviews)"),
+  dryRun: z
+    .boolean()
+    .default(false)
+    .describe(
+      "If true, return a preview of what would be sent without calling the external API. Use this for confirmation before sending files to external providers."
+    ),
 });
 
 export type SecondOpinionInput = z.infer<typeof SecondOpinionInputSchema>;
 
+// Re-export for consumers
+export type { EgressSummary } from "../output/writer.js";
+
+export interface SecondOpinionDryRunOutput {
+  dryRun: true;
+  provider: string;
+  summary: EgressSummary;
+  totalTokens: number;
+}
+
 export interface SecondOpinionOutput {
+  dryRun?: false;
   review: string;
   reviewFile: string;
+  egressManifestFile: string;
   provider: string;
   model: string;
   tokensUsed?: number;
   timestamp: string;
   filesReviewed: number;
   contextTokens: number;
+  summary: EgressSummary;
+}
+
+/**
+ * Build egress summary from bundle, categorizing files as project vs external
+ */
+function buildEgressSummary(
+  bundle: ContextBundle,
+  projectPath: string,
+  provider: string
+): EgressSummary {
+  const projectFilePaths: string[] = [];
+  const externalFilePaths: string[] = [];
+
+  for (const file of bundle.files) {
+    if (isWithinProject(file.path, projectPath)) {
+      projectFilePaths.push(file.path);
+    } else {
+      externalFilePaths.push(file.path);
+    }
+  }
+
+  // Get unique parent directories of external files
+  const externalLocations = [
+    ...new Set(externalFilePaths.map((p) => path.dirname(p))),
+  ];
+
+  return {
+    projectFilesSent: projectFilePaths.length,
+    projectFilePaths,
+    externalFilesSent: externalFilePaths.length,
+    externalFilePaths,
+    externalLocations,
+    blockedFiles: bundle.omittedFiles.map((f) => ({
+      path: f.path,
+      reason: f.reason,
+    })),
+    provider,
+  };
 }
 
 export async function executeReview(
   input: SecondOpinionInput
-): Promise<SecondOpinionOutput> {
+): Promise<SecondOpinionOutput | SecondOpinionDryRunOutput> {
   // Validate project path before proceeding
   validateProjectPath(input.projectPath);
 
@@ -127,6 +197,7 @@ export async function executeReview(
     projectPath: input.projectPath,
     sessionId: input.sessionId,
     includeFiles: input.includeFiles,
+    allowExternalFiles: input.allowExternalFiles,
     includeConversation: input.includeConversation,
     includeDependencies: input.includeDependencies,
     includeDependents: input.includeDependents,
@@ -135,13 +206,26 @@ export async function executeReview(
     maxTokens: input.maxTokens,
   });
 
-  // 2. Format as markdown
+  // Build egress summary (used for both dry run and actual execution)
+  const summary = buildEgressSummary(bundle, input.projectPath, input.provider);
+
+  // 2. If dry run, return preview without calling external API
+  if (input.dryRun) {
+    return {
+      dryRun: true,
+      provider: input.provider,
+      summary,
+      totalTokens: bundle.totalTokens,
+    };
+  }
+
+  // 3. Format as markdown
   const contextMarkdown = formatBundleAsMarkdown(bundle, input.projectPath);
 
-  // 3. Load review instructions
+  // 4. Load review instructions
   const instructions = loadReviewInstructions(input.projectPath);
 
-  // 4. Create provider and execute task
+  // 5. Create provider and execute task
   const provider = createProvider(input.provider as ProviderName, config);
   const response = await provider.review({
     instructions,
@@ -151,12 +235,12 @@ export async function executeReview(
     customPrompt: input.customPrompt,
   });
 
-  // 5. Derive session name if not provided
+  // 6. Derive session name if not provided
   const sessionName =
     input.sessionName ||
     deriveSessionName(bundle.conversationContext, "code-review");
 
-  // 6. Write the output to file
+  // 7. Write the output files
   const timestamp = new Date().toISOString();
   const metadata: ReviewMetadata = {
     sessionName,
@@ -175,14 +259,25 @@ export async function executeReview(
     response.review
   );
 
+  // 8. Write egress manifest for audit trail
+  const egressManifestFile = writeEgressManifest(
+    input.projectPath,
+    config.reviewsDir,
+    metadata,
+    summary
+  );
+
   return {
+    dryRun: false,
     review: response.review,
     reviewFile,
+    egressManifestFile,
     provider: input.provider,
     model: response.model,
     tokensUsed: response.tokensUsed,
     timestamp,
     filesReviewed: bundle.files.length,
     contextTokens: bundle.totalTokens,
+    summary,
   };
 }

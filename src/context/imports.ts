@@ -37,15 +37,30 @@ export function extractImports(content: string): string[] {
 
 /**
  * Check if a path is within the project bounds
+ * Resolves symlinks to handle cases like /var -> /private/var on macOS
  */
 export function isWithinProject(
   filePath: string,
   projectPath: string
 ): boolean {
-  const normalizedFile = path.normalize(path.resolve(filePath));
-  const normalizedProject = path.normalize(path.resolve(projectPath));
-  return normalizedFile.startsWith(normalizedProject + path.sep) ||
-    normalizedFile === normalizedProject;
+  // Use realpathSync to resolve symlinks (falls back to normalize if path doesn't exist)
+  let realFile: string;
+  let realProject: string;
+
+  try {
+    realFile = fs.realpathSync(filePath);
+  } catch {
+    realFile = path.normalize(path.resolve(filePath));
+  }
+
+  try {
+    realProject = fs.realpathSync(projectPath);
+  } catch {
+    realProject = path.normalize(path.resolve(projectPath));
+  }
+
+  return realFile.startsWith(realProject + path.sep) ||
+    realFile === realProject;
 }
 
 /**
@@ -127,59 +142,6 @@ export function getDependencies(
 }
 
 /**
- * Get all files that import a given file (dependents)
- */
-export async function getDependents(
-  filePath: string,
-  projectPath: string
-): Promise<string[]> {
-  const dependents: string[] = [];
-
-  // Get all code files in the project
-  const patterns = CODE_EXTENSIONS.map((ext) => `**/*${ext}`);
-  const allFiles = await glob(patterns, {
-    cwd: projectPath,
-    absolute: true,
-    ignore: ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.git/**"],
-  });
-
-  const targetName = path.basename(filePath, path.extname(filePath));
-  const targetDir = path.dirname(filePath);
-
-  for (const file of allFiles) {
-    if (file === filePath) continue;
-
-    try {
-      const content = fs.readFileSync(file, "utf-8");
-      const imports = extractImports(content);
-
-      for (const importPath of imports) {
-        const resolved = resolveImportPath(importPath, file, projectPath);
-        if (resolved === filePath) {
-          dependents.push(file);
-          break;
-        }
-
-        // Also check if the import would resolve to our target
-        // (handles cases like './foo' importing './foo.ts')
-        if (resolved) {
-          const resolvedName = path.basename(resolved, path.extname(resolved));
-          const resolvedDir = path.dirname(resolved);
-          if (resolvedName === targetName && resolvedDir === targetDir) {
-            dependents.push(file);
-            break;
-          }
-        }
-      }
-    } catch {
-      // Skip files that can't be read
-    }
-  }
-
-  return dependents;
-}
-
-/**
  * Get dependencies for multiple files
  */
 export function getDependenciesForFiles(
@@ -206,8 +168,6 @@ export function getDependenciesForFiles(
  * Maps each file to the files that import it (reverse dependency map)
  */
 export interface ImportIndex {
-  // Forward map: file -> files it imports
-  imports: Map<string, Set<string>>;
   // Reverse map: file -> files that import it
   importedBy: Map<string, Set<string>>;
 }
@@ -220,7 +180,6 @@ export async function buildImportIndex(
   projectPath: string
 ): Promise<ImportIndex> {
   const index: ImportIndex = {
-    imports: new Map(),
     importedBy: new Map(),
   };
 
@@ -232,22 +191,15 @@ export async function buildImportIndex(
     ignore: ["**/node_modules/**", "**/dist/**", "**/build/**", "**/.git/**"],
   });
 
-  // Build the index by scanning each file once
+  // Build the reverse dependency map by scanning each file once
   for (const file of allFiles) {
     try {
       const content = fs.readFileSync(file, "utf-8");
       const importPaths = extractImports(content);
 
-      const fileImports = new Set<string>();
-      index.imports.set(file, fileImports);
-
       for (const importPath of importPaths) {
         const resolved = resolveImportPath(importPath, file, projectPath);
         if (resolved) {
-          // Add to forward map
-          fileImports.add(resolved);
-
-          // Add to reverse map
           if (!index.importedBy.has(resolved)) {
             index.importedBy.set(resolved, new Set());
           }
