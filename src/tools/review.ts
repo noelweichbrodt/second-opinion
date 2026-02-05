@@ -6,6 +6,7 @@ import {
   bundleContext,
   formatBundleAsMarkdown,
   ContextBundle,
+  BudgetWarning,
 } from "../context/index.js";
 import { isWithinProject } from "../context/imports.js";
 import { createProvider, ProviderName } from "../providers/index.js";
@@ -16,6 +17,8 @@ import {
   ReviewMetadata,
   EgressSummary,
 } from "../output/writer.js";
+import { getRateLimiter, resetRateLimiter } from "../security/rate-limiter.js";
+import { redactSecrets } from "../security/redactor.js";
 
 /**
  * Validate that a project path is safe to use
@@ -46,7 +49,11 @@ function validateProjectPath(projectPath: string): void {
 
 export const SecondOpinionInputSchema = z.object({
   // Required
-  provider: z.enum(["gemini", "openai"]).describe("Which LLM to use for the review"),
+  provider: z
+    .enum(["gemini", "openai", "consensus"])
+    .describe(
+      "Which LLM to use. 'consensus' calls both Gemini and OpenAI in parallel and returns combined results."
+    ),
   projectPath: z.string().describe("Absolute path to the project being reviewed"),
 
   // Task specification
@@ -99,6 +106,16 @@ export const SecondOpinionInputSchema = z.object({
     .default(100000)
     .describe("Maximum tokens for context"),
 
+  // LLM options
+  temperature: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe(
+      "Temperature for LLM generation (0-1). Lower = more focused, higher = more creative. Defaults to 0.3."
+    ),
+
   // Output options
   sessionName: z
     .string()
@@ -130,6 +147,10 @@ export interface SecondOpinionDryRunOutput {
   provider: string;
   summary: EgressSummary;
   totalTokens: number;
+  /** Warnings about important files being omitted due to budget */
+  budgetWarnings: BudgetWarning[];
+  /** Human-readable message about the dry run status */
+  message: string;
 }
 
 export interface SecondOpinionOutput {
@@ -181,6 +202,14 @@ function buildEgressSummary(
       reason: f.reason,
     })),
     provider,
+    // Include redaction stats if any secrets were found
+    redactions:
+      bundle.redactionStats.totalCount > 0
+        ? {
+            totalCount: bundle.redactionStats.totalCount,
+            types: bundle.redactionStats.types,
+          }
+        : undefined,
   };
 }
 
@@ -211,21 +240,44 @@ export async function executeReview(
 
   // 2. If dry run, return preview without calling external API
   if (input.dryRun) {
+    const hasWarnings = bundle.budgetWarnings.length > 0;
     return {
       dryRun: true,
       provider: input.provider,
       summary,
       totalTokens: bundle.totalTokens,
+      budgetWarnings: bundle.budgetWarnings,
+      message: hasWarnings
+        ? `⚠️ ${bundle.budgetWarnings.length} budget warning(s) - some important files will be omitted`
+        : "Ready to send",
     };
   }
 
-  // 3. Format as markdown
+  // 3. Check rate limit before calling external API
+  const rateLimiter = getRateLimiter();
+  const rateLimitStatus = rateLimiter.checkAndRecord();
+  if (!rateLimitStatus.allowed) {
+    const retryAfterSec = Math.ceil((rateLimitStatus.retryAfterMs || 0) / 1000);
+    throw new Error(
+      `Rate limited. Too many requests. Try again in ${retryAfterSec} seconds.`
+    );
+  }
+
+  // 4. Format as markdown
   const contextMarkdown = formatBundleAsMarkdown(bundle, input.projectPath);
 
-  // 4. Load review instructions
+  // 5. Load review instructions
   const instructions = loadReviewInstructions(input.projectPath);
 
-  // 5. Create provider and execute task
+  // 6. Determine temperature (input > config > default)
+  const temperature = input.temperature ?? config.temperature;
+
+  // 7. Check if files were omitted due to budget (for system prompt calibration)
+  const hasOmittedFiles = bundle.omittedFiles.some(
+    (f) => f.reason === "budget_exceeded"
+  );
+
+  // 8. Create provider and execute task
   const provider = createProvider(input.provider as ProviderName, config);
   const response = await provider.review({
     instructions,
@@ -233,6 +285,8 @@ export async function executeReview(
     task: input.task,
     focusAreas: input.focusAreas,
     customPrompt: input.customPrompt,
+    temperature,
+    hasOmittedFiles,
   });
 
   // 6. Derive session name if not provided
@@ -281,3 +335,6 @@ export async function executeReview(
     summary,
   };
 }
+
+// Re-export for testing
+export { resetRateLimiter } from "../security/rate-limiter.js";

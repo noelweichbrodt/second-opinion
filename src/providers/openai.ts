@@ -19,7 +19,10 @@ export class OpenAIProvider implements ReviewProvider {
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
     const prompt = buildReviewPrompt(request);
-    const systemPrompt = getSystemPrompt(!!request.task);
+    const systemPrompt = getSystemPrompt(!!request.task, request.hasOmittedFiles);
+
+    // Use provided temperature or default to 0.3 for focused output
+    const temperature = request.temperature ?? 0.3;
 
     const response = await this.client.chat.completions.create({
       model: this.model,
@@ -34,7 +37,7 @@ export class OpenAIProvider implements ReviewProvider {
         },
       ],
       max_completion_tokens: 8192,
-      temperature: 0.3,
+      temperature,
     });
 
     const text = response.choices[0]?.message?.content || "";

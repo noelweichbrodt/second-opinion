@@ -19,12 +19,15 @@ export class GeminiProvider implements ReviewProvider {
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
     const prompt = buildReviewPrompt(request);
-    const systemInstruction = getSystemPrompt(!!request.task);
+    const systemInstruction = getSystemPrompt(!!request.task, request.hasOmittedFiles);
 
     const model = this.client.getGenerativeModel({
       model: this.model,
       systemInstruction,
     });
+
+    // Use provided temperature or default to 0.3 for focused output
+    const temperature = request.temperature ?? 0.3;
 
     const result = await model.generateContent({
       contents: [
@@ -35,7 +38,7 @@ export class GeminiProvider implements ReviewProvider {
       ],
       generationConfig: {
         maxOutputTokens: 8192,
-        temperature: 0.3, // Lower temperature for more focused reviews
+        temperature,
       },
     });
 

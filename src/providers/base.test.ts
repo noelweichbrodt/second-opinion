@@ -13,6 +13,30 @@ describe("getSystemPrompt", () => {
     expect(prompt).toContain("code review");
     expect(prompt).toContain("constructive");
   });
+
+  it("adds context calibration when hasOmittedFiles is true", () => {
+    const prompt = getSystemPrompt(false, true);
+    expect(prompt).toContain("Context Limitations");
+    expect(prompt).toContain("UNVERIFIED");
+    expect(prompt).toContain("Omitted Files");
+  });
+
+  it("does not add calibration when hasOmittedFiles is false", () => {
+    const prompt = getSystemPrompt(false, false);
+    expect(prompt).not.toContain("Context Limitations");
+    expect(prompt).not.toContain("UNVERIFIED");
+  });
+
+  it("does not add calibration when hasOmittedFiles is undefined", () => {
+    const prompt = getSystemPrompt(false);
+    expect(prompt).not.toContain("Context Limitations");
+  });
+
+  it("adds calibration to task prompts when hasOmittedFiles is true", () => {
+    const prompt = getSystemPrompt(true, true);
+    expect(prompt).toContain("Complete the requested task");
+    expect(prompt).toContain("Context Limitations");
+  });
 });
 
 describe("buildReviewPrompt", () => {

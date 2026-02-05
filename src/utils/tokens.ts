@@ -29,3 +29,18 @@ export const BUDGET_ALLOCATION = {
 } as const;
 
 export type BudgetCategory = keyof typeof BUDGET_ALLOCATION;
+
+/**
+ * Priority order for processing categories during budget allocation.
+ * Higher priority categories are processed first and get their allocation.
+ * Unused budget from earlier categories spills over to later ones.
+ */
+export const CATEGORY_PRIORITY_ORDER: BudgetCategory[] = [
+  "explicit",   // User explicitly requested - highest priority
+  "session",    // Claude worked on these - critical context
+  "git",        // Other git changes
+  "dependency", // Files imported by modified code
+  "dependent",  // Files that import modified code
+  "test",       // Related tests
+  "type",       // Type definitions - lowest priority
+];

@@ -4,6 +4,10 @@ export interface ReviewRequest {
   task?: string;
   focusAreas?: string[];
   customPrompt?: string;
+  /** Temperature for LLM generation (0-1). Lower = more focused, higher = more creative. */
+  temperature?: number;
+  /** Whether files were omitted from context due to budget constraints */
+  hasOmittedFiles?: boolean;
 }
 
 export interface ReviewResponse {
@@ -18,12 +22,36 @@ export interface ReviewProvider {
 }
 
 /**
- * Get the system prompt based on whether a custom task is provided
+ * Calibration text for when files were omitted due to budget constraints
  */
-export function getSystemPrompt(hasTask: boolean): string {
-  return hasTask
+const CONTEXT_CALIBRATION = `
+
+## Important: Context Limitations
+
+This review is based on a subset of the codebase. Some files were omitted due to token limits.
+
+When reviewing:
+1. Only report issues you can VERIFY in the provided code
+2. If you suspect an issue but cannot see the relevant implementation, mark it as:
+   "⚠️ UNVERIFIED: [description] - relevant code not in context"
+3. Do NOT assume missing code is actually missing from the codebase
+4. Check the "Omitted Files" section before flagging missing implementations`;
+
+/**
+ * Get the system prompt based on whether a custom task is provided
+ * and whether files were omitted from context
+ */
+export function getSystemPrompt(hasTask: boolean, hasOmittedFiles?: boolean): string {
+  let prompt = hasTask
     ? "You are an expert software engineer. Complete the requested task thoroughly and provide clear, actionable output."
     : "You are an expert software engineer performing a code review. Be thorough, constructive, and actionable.";
+
+  // Add calibration when files were omitted
+  if (hasOmittedFiles) {
+    prompt += CONTEXT_CALIBRATION;
+  }
+
+  return prompt;
 }
 
 /**
