@@ -24,10 +24,10 @@ When invoked, parse the arguments:
 3. Derive a session name from the work done in this conversation (e.g., "add-auth-flow", "fix-login-bug").
 
 Call the `mcp__second-opinion__second_opinion` tool with:
-- `provider`: "gemini" or "openai"
+- `provider`: "gemini", "openai", or "consensus"
 - `projectPath`: The current working directory (absolute path)
 - `sessionName`: Descriptive name based on the work done
-- `customPrompt`: The user's task text (if provided)
+- `customPrompt`: The user's task text (if provided, passed as the `customPrompt` parameter)
 
 After the review completes, report:
 - Path to the output file

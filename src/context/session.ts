@@ -46,6 +46,25 @@ function projectPathToDir(projectPath: string): string {
 }
 
 /**
+ * Check if a resolved path is within the allowed project directory
+ * Both paths should already be resolved via realpathSync for accurate comparison
+ */
+function isWithinProjectDir(filePath: string, projectDir: string): boolean {
+  // Resolve both paths to handle symlinks consistently (e.g., /var -> /private/var on macOS)
+  let resolvedFile: string;
+  let resolvedProject: string;
+  try {
+    resolvedFile = fs.realpathSync(filePath);
+    resolvedProject = fs.realpathSync(projectDir);
+  } catch {
+    // If we can't resolve either path, fall back to normalized comparison
+    resolvedFile = path.normalize(filePath);
+    resolvedProject = path.normalize(projectDir);
+  }
+  return resolvedFile.startsWith(resolvedProject + path.sep);
+}
+
+/**
  * Resolve persisted content from tool results
  * When tool output is too large, Claude Code saves it to a file and includes a marker
  */
@@ -73,9 +92,19 @@ function resolvePersistedContent(
 
   for (const candidate of candidates) {
     try {
-      if (fs.existsSync(candidate)) {
-        return fs.readFileSync(candidate, "utf-8");
+      if (!fs.existsSync(candidate)) {
+        continue;
       }
+
+      // Resolve symlinks to prevent escaping to sensitive locations
+      const realPath = fs.realpathSync(candidate);
+
+      // Verify the resolved path is still within the project directory
+      if (!isWithinProjectDir(realPath, projectDir)) {
+        continue;
+      }
+
+      return fs.readFileSync(realPath, "utf-8");
     } catch {
       // Continue to next candidate
     }
