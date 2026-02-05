@@ -22,6 +22,11 @@ export interface EgressSummary {
     reason: string;
   }[];
   provider: string;
+  /** Statistics about secrets that were redacted from file content */
+  redactions?: {
+    totalCount: number;
+    types: string[];
+  };
 }
 
 /**

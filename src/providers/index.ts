@@ -2,12 +2,14 @@ import { Config } from "../config.js";
 import { ReviewProvider } from "./base.js";
 import { GeminiProvider } from "./gemini.js";
 import { OpenAIProvider } from "./openai.js";
+import { ConsensusProvider } from "./consensus.js";
 
 export * from "./base.js";
 export * from "./gemini.js";
 export * from "./openai.js";
+export * from "./consensus.js";
 
-export type ProviderName = "gemini" | "openai";
+export type ProviderName = "gemini" | "openai" | "consensus";
 
 export function createProvider(
   name: ProviderName,
@@ -26,6 +28,10 @@ export function createProvider(
       }
       return new OpenAIProvider(config.openaiApiKey, config.openaiModel);
 
+    case "consensus":
+      // Consensus provider validates its own requirements
+      return new ConsensusProvider(config);
+
     default:
       throw new Error(`Unknown provider: ${name}`);
   }
@@ -39,6 +45,10 @@ export function getAvailableProviders(config: Config): ProviderName[] {
   }
   if (config.openaiApiKey) {
     providers.push("openai");
+  }
+  // Consensus is available when both providers are configured
+  if (config.geminiApiKey && config.openaiApiKey) {
+    providers.push("consensus");
   }
 
   return providers;

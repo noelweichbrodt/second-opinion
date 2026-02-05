@@ -272,7 +272,7 @@ describe("OpenAIProvider", () => {
     expect(callArgs.messages[1].content).toContain("Pay special attention to error handling");
   });
 
-  it("sets max_completion_tokens and temperature", async () => {
+  it("sets max_completion_tokens and default temperature", async () => {
     mockCreate.mockResolvedValueOnce({
       choices: [{ message: { content: "Review" } }],
       usage: null,
@@ -288,5 +288,41 @@ describe("OpenAIProvider", () => {
     const callArgs = mockCreate.mock.calls[0][0];
     expect(callArgs.max_completion_tokens).toBe(8192);
     expect(callArgs.temperature).toBe(0.3);
+  });
+
+  it("uses custom temperature when provided", async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "Review" } }],
+      usage: null,
+    });
+
+    const request: ReviewRequest = {
+      instructions: "Guidelines",
+      context: "Code",
+      temperature: 0.8,
+    };
+
+    await provider.review(request);
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.temperature).toBe(0.8);
+  });
+
+  it("uses zero temperature when explicitly set", async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "Review" } }],
+      usage: null,
+    });
+
+    const request: ReviewRequest = {
+      instructions: "Guidelines",
+      context: "Code",
+      temperature: 0,
+    };
+
+    await provider.review(request);
+
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.temperature).toBe(0);
   });
 });

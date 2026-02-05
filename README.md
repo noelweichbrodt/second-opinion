@@ -48,12 +48,27 @@ Don't just get code reviews—ask for anything:
 
 ### Multiple Providers
 
-Switch between Gemini and GPT:
+Switch between Gemini and GPT, or use both:
 
 ```
 /second-opinion gemini Review this code    # Uses Gemini (default)
 /second-opinion openai Review this code    # Uses GPT
+/second-opinion consensus Review this code # Uses BOTH in parallel
 ```
+
+### Consensus Mode
+
+Get perspectives from both Gemini and OpenAI in a single request:
+
+```
+/second-opinion consensus
+```
+
+Consensus mode:
+- Calls both providers simultaneously (faster than sequential calls)
+- Returns combined output with each model's perspective
+- Highlights areas of agreement and differences
+- Requires both `GEMINI_API_KEY` and `OPENAI_API_KEY` to be configured
 
 ### Smart Token Budgeting
 
@@ -115,11 +130,32 @@ Analysis complete! Written to second-opinions/add-auth-flow.openai.security-audi
 
 ### Compare Perspectives
 
-Get reviews from both providers:
+Get reviews from both providers at once:
+
+```
+> /second-opinion consensus Review this implementation
+
+Consensus review complete! Written to second-opinions/auth-flow.consensus.review.md
+- Both models analyzed 14 files
+- Agreement: Both flagged the missing null check on line 42
+- Gemini highlighted: Performance concern with nested loops
+- OpenAI highlighted: Inconsistent error message formats
+```
+
+Or separately:
 
 ```
 > /second-opinion gemini Review this implementation
 > /second-opinion openai Review this implementation
+```
+
+### Configurable Temperature
+
+Control creativity vs. focus:
+
+```
+> /second-opinion temp=0.8 Creative suggestions for improving UX
+> /second-opinion temp=0.1 Strict security audit
 ```
 
 ## Security
@@ -177,6 +213,23 @@ Every review creates a companion `.egress.json` file that records:
 
 This allows you to audit what data left your system.
 
+### Secret Redaction
+
+Second Opinion automatically scans file content for secrets before sending to external LLMs:
+
+**Detected and redacted:**
+- API keys (OpenAI `sk-...`, AWS `AKIA...`, GitHub `ghp_...`, Stripe `sk_live_...`)
+- JWT tokens
+- Database connection strings
+- Private keys (PEM format)
+- Generic secrets/passwords in assignment format
+- Basic auth in URLs
+- Slack tokens
+
+Redacted content appears as `[REDACTED:type]` (e.g., `[REDACTED:api_key]`) in the output sent to the external LLM. The egress manifest records how many secrets were redacted and their types.
+
+**Note:** This is a safety net, not a replacement for proper secret management. Sensitive paths like `.env` files are still blocked entirely.
+
 ### API Key Safety
 
 Never paste API keys directly in the terminal—they get saved to shell history. Instead:
@@ -208,6 +261,9 @@ claude mcp add second-opinion \
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI model to use |
 | `DEFAULT_PROVIDER` | `gemini` | Default provider when not specified |
 | `MAX_CONTEXT_TOKENS` | `100000` | Maximum tokens for context |
+| `TEMPERATURE` | `0.3` | Default LLM temperature (0-1) |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (1 minute) |
+| `RATE_LIMIT_MAX_REQUESTS` | `10` | Max requests per window |
 | `REVIEWS_DIR` | `second-opinions` | Output directory (relative to project) |
 
 ### Config File
@@ -222,6 +278,9 @@ Create `~/.config/second-opinion/config.json`:
   "geminiModel": "gemini-2.0-flash-exp",
   "openaiModel": "gpt-4o",
   "maxContextTokens": 100000,
+  "temperature": 0.3,
+  "rateLimitWindowMs": 60000,
+  "rateLimitMaxRequests": 10,
   "reviewsDir": "second-opinions"
 }
 ```
@@ -251,20 +310,21 @@ When calling the MCP tool directly:
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `provider` | Yes | — | `"gemini"` or `"openai"` |
+| `provider` | Yes | — | `"gemini"`, `"openai"`, or `"consensus"` |
 | `projectPath` | Yes | — | Absolute path to project |
 | `task` | No | — | Custom prompt (defaults to code review) |
 | `sessionId` | No | latest | Claude Code session ID |
 | `sessionName` | No | auto | Name for output file |
 | `includeFiles` | No | — | Additional files/folders to include |
-| `allowExternalFiles` | No | `false` | Allow files outside project (required for external paths in includeFiles) |
-| `dryRun` | No | `false` | Preview what would be sent without calling external API |
+| `allowExternalFiles` | No | `false` | Allow files outside project |
+| `dryRun` | No | `false` | Preview without calling external API |
 | `includeConversation` | No | `true` | Include conversation context |
 | `includeDependencies` | No | `true` | Include imported files |
 | `includeDependents` | No | `true` | Include importing files |
 | `includeTests` | No | `true` | Include test files |
 | `includeTypes` | No | `true` | Include type definitions |
 | `maxTokens` | No | `100000` | Context token budget |
+| `temperature` | No | `0.3` | LLM temperature (0-1) |
 | `focusAreas` | No | — | Specific areas to focus on |
 
 ## How It Works

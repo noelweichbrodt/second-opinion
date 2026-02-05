@@ -144,7 +144,8 @@ describe("getAvailableProviders", () => {
 
     expect(providers).toContain("gemini");
     expect(providers).toContain("openai");
-    expect(providers).toHaveLength(2);
+    expect(providers).toContain("consensus"); // Consensus available when both keys set
+    expect(providers).toHaveLength(3);
   });
 
   it("returns providers in correct order (gemini first)", () => {

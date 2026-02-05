@@ -221,7 +221,7 @@ describe("GeminiProvider", () => {
     expect(callArgs.contents[0].parts[0].text).toContain("Pay special attention to error handling");
   });
 
-  it("sets generation config with maxOutputTokens and temperature", async () => {
+  it("sets generation config with maxOutputTokens and default temperature", async () => {
     mockGenerateContent.mockResolvedValueOnce({
       response: {
         text: () => "Review",
@@ -240,5 +240,45 @@ describe("GeminiProvider", () => {
     expect(callArgs.generationConfig).toBeDefined();
     expect(callArgs.generationConfig.maxOutputTokens).toBe(8192);
     expect(callArgs.generationConfig.temperature).toBe(0.3);
+  });
+
+  it("uses custom temperature when provided", async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      response: {
+        text: () => "Review",
+        usageMetadata: null,
+      },
+    });
+
+    const request: ReviewRequest = {
+      instructions: "Guidelines",
+      context: "Code",
+      temperature: 0.9,
+    };
+
+    await provider.review(request);
+
+    const callArgs = mockGenerateContent.mock.calls[0][0];
+    expect(callArgs.generationConfig.temperature).toBe(0.9);
+  });
+
+  it("uses zero temperature when explicitly set", async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      response: {
+        text: () => "Review",
+        usageMetadata: null,
+      },
+    });
+
+    const request: ReviewRequest = {
+      instructions: "Guidelines",
+      context: "Code",
+      temperature: 0,
+    };
+
+    await provider.review(request);
+
+    const callArgs = mockGenerateContent.mock.calls[0][0];
+    expect(callArgs.generationConfig.temperature).toBe(0);
   });
 });

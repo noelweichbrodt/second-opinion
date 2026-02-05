@@ -11,6 +11,12 @@ export const ConfigSchema = z.object({
   openaiModel: z.string().default("gpt-5.2"),
   maxContextTokens: z.number().default(100000),
   reviewsDir: z.string().default("second-opinions"),
+  /** Default temperature for LLM generation (0-1) */
+  temperature: z.number().min(0).max(1).default(0.3),
+  /** Rate limit window in milliseconds */
+  rateLimitWindowMs: z.number().positive().default(60000),
+  /** Maximum requests per rate limit window */
+  rateLimitMaxRequests: z.number().positive().default(10),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -48,6 +54,15 @@ export function loadConfig(): Config {
       ? parseInt(process.env.MAX_CONTEXT_TOKENS)
       : fileConfig.maxContextTokens,
     reviewsDir: process.env.REVIEWS_DIR || fileConfig.reviewsDir,
+    temperature: process.env.TEMPERATURE
+      ? parseFloat(process.env.TEMPERATURE)
+      : fileConfig.temperature,
+    rateLimitWindowMs: process.env.RATE_LIMIT_WINDOW_MS
+      ? parseInt(process.env.RATE_LIMIT_WINDOW_MS)
+      : fileConfig.rateLimitWindowMs,
+    rateLimitMaxRequests: process.env.RATE_LIMIT_MAX_REQUESTS
+      ? parseInt(process.env.RATE_LIMIT_MAX_REQUESTS)
+      : fileConfig.rateLimitMaxRequests,
   });
 
   return config;
