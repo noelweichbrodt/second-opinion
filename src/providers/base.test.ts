@@ -12,6 +12,19 @@ describe("getSystemPrompt", () => {
     const prompt = getSystemPrompt(false);
     expect(prompt).toContain("code review");
     expect(prompt).toContain("constructive");
+    expect(prompt).toContain("beyond");
+  });
+
+  it("encourages lateral thinking in review prompt", () => {
+    const prompt = getSystemPrompt(false);
+    expect(prompt).toContain("senior software engineer");
+    expect(prompt).toContain("above or below");
+  });
+
+  it("encourages lateral thinking in task prompt", () => {
+    const prompt = getSystemPrompt(true);
+    expect(prompt).toContain("senior software engineer");
+    expect(prompt).toContain("upstream or downstream");
   });
 
   it("adds context calibration when hasOmittedFiles is true", () => {

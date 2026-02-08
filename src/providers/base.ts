@@ -43,8 +43,8 @@ When reviewing:
  */
 export function getSystemPrompt(hasTask: boolean, hasOmittedFiles?: boolean): string {
   let prompt = hasTask
-    ? "You are an expert software engineer. Complete the requested task thoroughly and provide clear, actionable output."
-    : "You are an expert software engineer performing a code review. Be thorough, constructive, and actionable.";
+    ? "You are a senior software engineer. Complete the requested task thoroughly and provide clear, actionable output. When relevant, consider whether changes upstream or downstream of the immediate scope would produce a better outcome."
+    : "You are a senior software engineer performing a code review. You have seen systems like this evolve over years. Be thorough, constructive, and actionable. Look beyond the immediate diff — consider whether the right change might be above or below the code under review.";
 
   // Add calibration when files were omitted
   if (hasOmittedFiles) {
