@@ -27,28 +27,18 @@ describe("getSystemPrompt", () => {
     expect(prompt).toContain("upstream or downstream");
   });
 
-  it("adds context calibration when hasOmittedFiles is true", () => {
-    const prompt = getSystemPrompt(false, true);
-    expect(prompt).toContain("Context Limitations");
-    expect(prompt).toContain("UNVERIFIED");
-    expect(prompt).toContain("Omitted Files");
-  });
-
-  it("does not add calibration when hasOmittedFiles is false", () => {
-    const prompt = getSystemPrompt(false, false);
-    expect(prompt).not.toContain("Context Limitations");
-    expect(prompt).not.toContain("UNVERIFIED");
-  });
-
-  it("does not add calibration when hasOmittedFiles is undefined", () => {
+  it("always includes verification requirements in review prompt", () => {
     const prompt = getSystemPrompt(false);
-    expect(prompt).not.toContain("Context Limitations");
+    expect(prompt).toContain("Verification Requirements");
+    expect(prompt).toContain("UNVERIFIED");
+    expect(prompt).toContain("QUOTE the specific code");
   });
 
-  it("adds calibration to task prompts when hasOmittedFiles is true", () => {
-    const prompt = getSystemPrompt(true, true);
+  it("always includes verification requirements in task prompt", () => {
+    const prompt = getSystemPrompt(true);
     expect(prompt).toContain("Complete the requested task");
-    expect(prompt).toContain("Context Limitations");
+    expect(prompt).toContain("Verification Requirements");
+    expect(prompt).toContain("QUOTE the specific code");
   });
 });
 

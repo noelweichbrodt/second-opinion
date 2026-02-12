@@ -29,6 +29,10 @@ export interface PRContext {
   changedFiles: string[];
 }
 
+export type PRDetectionResult =
+  | { ok: true; pr: PRContext }
+  | { ok: false; reason: "gh_not_installed" | "gh_command_failed" | "no_pr_found" | "parse_error"; message: string };
+
 /** Raw shapes from `gh pr view --json` output */
 interface GhComment {
   author?: { login?: string };
@@ -62,14 +66,18 @@ export function isGhAvailable(): boolean {
 
 /**
  * Detect a PR associated with the current branch or a specific PR number.
- * Returns null on any failure (gh not installed, not authenticated, no PR).
+ * Returns a discriminated union with failure reason on error.
  */
 export function detectPR(
   projectPath: string,
   prNumber?: number
-): PRContext | null {
+): PRDetectionResult {
   if (!isGhAvailable()) {
-    return null;
+    return {
+      ok: false,
+      reason: "gh_not_installed",
+      message: "GitHub CLI (gh) is not installed. Install from https://cli.github.com/ for PR context detection.",
+    };
   }
 
   try {
@@ -83,12 +91,21 @@ export function detectPR(
     const result = spawnSync("gh", args, { cwd: projectPath, ...SPAWN_OPTS });
 
     if (result.error || result.status !== 0) {
-      return null;
+      const stderr = (result.stderr || "").trim();
+      // "no pull requests found" is a normal condition, not an error
+      if (stderr.includes("no pull requests found") || stderr.includes("Could not resolve")) {
+        return { ok: false, reason: "no_pr_found", message: "No pull request found for the current branch." };
+      }
+      return {
+        ok: false,
+        reason: "gh_command_failed",
+        message: `gh pr view failed: ${stderr.slice(0, 200)}`,
+      };
     }
 
     const data = JSON.parse(result.stdout);
 
-    return {
+    const pr: PRContext = {
       number: data.number,
       title: data.title || "",
       body: data.body || "",
@@ -113,8 +130,15 @@ export function detectPR(
         .filter(Boolean)
         .map((p: string) => path.join(projectPath, p)),
     };
+
+    // Fallback: if gh returned no files but we have a base branch, use git diff
+    if (pr.changedFiles.length === 0 && pr.baseBranch) {
+      pr.changedFiles = getPRChangedFiles(projectPath, pr.baseBranch);
+    }
+
+    return { ok: true, pr };
   } catch {
-    return null;
+    return { ok: false, reason: "parse_error", message: "Failed to parse gh pr view output." };
   }
 }
 

@@ -19,7 +19,7 @@ export class GeminiProvider implements ReviewProvider {
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
     const prompt = buildReviewPrompt(request);
-    const systemInstruction = getSystemPrompt(!!request.task, request.hasOmittedFiles);
+    const systemInstruction = getSystemPrompt(!!request.task);
 
     const model = this.client.getGenerativeModel({
       model: this.model,

@@ -1,6 +1,6 @@
 # Plan: PR-Aware Context Detection for Second Opinion
 
-**Status:** Implemented (421 tests passing)
+**Status:** Implemented + hardened (421 tests passing)
 
 ## Context
 
@@ -40,6 +40,10 @@ interface PRReview {
   state: string;              // APPROVED, CHANGES_REQUESTED, COMMENTED
   createdAt: string;
 }
+
+type PRDetectionResult =
+  | { ok: true; pr: PRContext }
+  | { ok: false; reason: "gh_not_installed" | "gh_command_failed" | "no_pr_found" | "parse_error"; message: string };
 ```
 
 **Internal types:** `GhComment`, `GhReview`, `GhLabel`, `GhFile` — typed shapes for the raw `gh pr view --json` output (all fields optional). These replace inline type annotations on the `.map()` callbacks.
@@ -48,11 +52,11 @@ interface PRReview {
 
 **Functions:**
 - `isGhAvailable()` — check if `gh` CLI is installed via `spawnSync("gh", ["--version"])`
-- `detectPR(projectPath, prNumber?)` — run `gh pr view [prNumber] --json number,title,body,url,state,baseRefName,headRefName,labels,comments,reviews,files` and parse. Return `null` on any failure (gh not installed, not authenticated, no PR). When `prNumber` is provided, view that specific PR; otherwise auto-detect from current branch.
-- `getPRChangedFiles(projectPath, baseBranch)` — run `git diff <baseBranch>...HEAD --name-only` to get file paths. Map to absolute paths. This is a fallback/complement to the `files` field from `gh pr view`. **Note:** Not currently called from the bundler pipeline — `detectPR` gets files from `gh pr view` directly. Exported for future use or manual fallback.
+- `detectPR(projectPath, prNumber?)` — run `gh pr view [prNumber] --json number,title,body,url,state,baseRefName,headRefName,labels,comments,reviews,files` and parse. Returns `PRDetectionResult` — a discriminated union with typed failure reasons (`gh_not_installed`, `gh_command_failed`, `no_pr_found`, `parse_error`) and user-facing messages. When `prNumber` is provided, view that specific PR; otherwise auto-detect from current branch. Falls back to `getPRChangedFiles` when `gh pr view` returns an empty files array.
+- `getPRChangedFiles(projectPath, baseBranch)` — run `git diff <baseBranch>...HEAD --name-only` to get file paths. Map to absolute paths. Called as a fallback inside `detectPR` when `gh pr view --json files` returns an empty array but `baseBranch` is available.
 - `formatPRMetadata(pr)` — format PR title, body, comments, and reviews as markdown. Run all text through `redactSecrets()` before inclusion.
 
-**Error handling:** All failures return `null` silently (matching `git.ts` pattern). No thrown errors for missing `gh`, auth issues, or missing PRs.
+**Error handling:** Returns typed `{ ok: false, reason, message }` for each failure mode. The `no_pr_found` case is treated as informational (not surfaced to the user). Other failures (`gh_not_installed`, `gh_command_failed`, `parse_error`) are stored as `prDetectionFailure` on the bundle and passed through to the tool output so the user understands why PR context is missing.
 
 **Security:** Use `spawnSync` with argument arrays (never string interpolation). `prNumber` is validated as `z.number()` so safe to pass as `String(prNumber)`.
 
@@ -80,17 +84,21 @@ Add `"pr"` to `CATEGORY_PRIORITY_ORDER` between `session` and `git`.
 - Add `pr: number` to `ContextBundle.categories`
 - Add `prContext?: string` to `ContextBundle` — the formatted PR metadata markdown
 - Add `prMetadata?: { number, url, commentsCount, reviewsCount }` to `ContextBundle` — structured PR data for egress summary (not in original plan; added because `buildEgressSummary` needs structured data, not just the formatted markdown string)
+- Add `prDetectionFailure?: { reason, message }` to `ContextBundle` — set when PR detection fails for a non-trivial reason (not `no_pr_found`)
 
 **New step in `bundleContext()` between session (step 2) and git (step 3):**
-1. Call `detectPR(projectPath, options.prNumber)`
-2. If PR found:
+1. Call `detectPR(projectPath, options.prNumber)` — returns `PRDetectionResult`
+2. If `result.ok`:
    - Format PR metadata via `formatPRMetadata()` → store in `bundle.prContext`
    - Store structured metadata in `bundle.prMetadata`
    - Add PR metadata tokens to `bundle.totalTokens` (treated like conversation context — not charged against the PR file budget)
-   - Read PR changed files as `FileEntry` with category `"pr"`
+   - **Validate PR changed files before reading:** each path is checked with `isSensitivePath()` and `isWithinProject()`, matching the validation in `expandPath()`. Blocked files go to `omittedFiles` with appropriate reason.
+   - Read validated PR changed files as `FileEntry` with category `"pr"`
    - Add PR changed file paths to `modifiedFiles[]` so they feed into dependency/dependent/test/type resolution
    - Sort by token count (smaller first), process with `addFilesWithBudget`
-3. If no PR found, call `getBudgetWithSpillover("pr", 0)` so the full PR budget spills over to later categories
+3. If `!result.ok`:
+   - If `reason !== "no_pr_found"`, store `{ reason, message }` as `bundle.prDetectionFailure`
+   - Call `getBudgetWithSpillover("pr", 0)` so the full PR budget spills over to later categories
 
 **`BundleOptions` change:** Add `prNumber?: number`
 
@@ -109,7 +117,7 @@ prNumber: z.number().optional()
   .describe("PR number to review. Auto-detects from current branch if omitted.")
 ```
 
-Pass `prNumber` through to `bundleContext()` options.
+Pass `prNumber` through to `bundleContext()` options. Pass `bundle.prDetectionFailure` through to both `SecondOpinionOutput` and `SecondOpinionDryRunOutput` so the caller sees why PR context is absent.
 
 Update `buildEgressSummary()` to include PR metadata in the egress summary when present:
 ```typescript
@@ -145,16 +153,23 @@ Raise the default from `100000` to `200000`. The current 100k budget is too tigh
 
 | File | Change |
 |------|--------|
-| `src/context/pr.ts` | **New** — PR detection, metadata formatting |
-| `src/context/pr.test.ts` | **New** — 19 tests for PR module |
+| `src/context/pr.ts` | **New** — PR detection with `PRDetectionResult` return type, metadata formatting, `getPRChangedFiles` fallback |
+| `src/context/pr.test.ts` | **New** — 21 tests for PR module (typed result assertions, fallback test, `gh_command_failed` test) |
 | `src/utils/tokens.ts` | Add `pr` to budget allocation + priority order |
-| `src/context/bundler.ts` | Add `pr` to types, pipeline step, format output; programmatic baseBudgets |
-| `src/tools/review.ts` | Add `prNumber` param, pass through, update egress; simplify buildEgressSummary |
+| `src/context/bundler.ts` | Add `pr` to types, pipeline step, format output; programmatic baseBudgets; `prDetectionFailure` field; path validation for PR files |
+| `src/tools/review.ts` | Add `prNumber` param, pass through, update egress; simplify buildEgressSummary; remove `hasOmittedFiles`; add `prDetectionFailure` to output types |
+| `src/providers/base.ts` | Replace conditional `CONTEXT_CALIBRATION` with always-on `VERIFICATION_REQUIREMENTS`; remove `hasOmittedFiles` from `ReviewRequest` and `getSystemPrompt()` |
+| `src/providers/base.test.ts` | Update tests for always-on verification (replace 4 conditional tests with 2 always-on tests) |
+| `src/providers/gemini.ts` | Remove `hasOmittedFiles` from `getSystemPrompt()` call |
+| `src/providers/openai.ts` | Remove `hasOmittedFiles` from `getSystemPrompt()` call |
 | `src/output/writer.ts` | Extend `EgressSummary` with `prContext` |
 | `src/context/index.ts` | Add re-export |
 | `src/server.ts` | Add `prNumber` to tool schema |
 | `src/config.ts` | Increase `maxContextTokens` default from 100k to 200k |
 | `src/config.test.ts` | Update expected default to 200000 |
+| `templates/second-opinion.md` | Add required `**Evidence**` field to Critical Issues; strengthen citation guidelines |
+| `.gitignore` | Add `coverage/` |
+| `README.md` | Document `gh` CLI as optional dependency; add PR context to feature list |
 
 ## Existing code reused
 
@@ -166,12 +181,16 @@ Raise the default from `100000` to `200000`. The current 100k budget is too tigh
 
 ## Verification
 
-1. **Unit tests** — `src/context/pr.test.ts` (19 tests):
+1. **Unit tests** — `src/context/pr.test.ts` (21 tests):
    - `isGhAvailable()` returns true/false based on gh exit status
-   - `detectPR()` returns null when gh missing, no PR, or malformed JSON
+   - `detectPR()` returns `{ ok: false, reason: "gh_not_installed" }` when gh missing
+   - `detectPR()` returns `{ ok: false, reason: "no_pr_found" }` when no PR for branch
+   - `detectPR()` returns `{ ok: false, reason: "gh_command_failed" }` on other gh errors (e.g. HTTP 403)
+   - `detectPR()` returns `{ ok: false, reason: "parse_error" }` on malformed JSON
    - `detectPR()` parses full gh JSON correctly including comments/reviews/labels/files
    - `detectPR()` handles missing optional fields gracefully
    - `detectPR()` passes explicit prNumber vs auto-detects
+   - `detectPR()` falls back to `getPRChangedFiles` when gh returns empty files array
    - `getPRChangedFiles()` returns absolute paths, empty array on failure
    - `formatPRMetadata()` includes all fields, redacts secrets in body/comments
    - `formatPRMetadata()` omits empty sections
@@ -200,7 +219,7 @@ Raise the default from `100000` to `200000`. The current 100k budget is too tigh
 
 4. **`baseBudgets` built programmatically** — Original plan didn't specify construction method. The initial implementation listed all 8 categories manually. Simplification pass replaced with `Object.fromEntries` + `Object.entries(BUDGET_ALLOCATION).map(...)`.
 
-5. **`getPRChangedFiles` not wired into pipeline** — The plan listed it as a "fallback/complement" but the implementation gets files directly from `gh pr view --json files`. The function is exported but unused in the pipeline. Could be wired in as fallback if gh files field proves unreliable.
+5. **`getPRChangedFiles` initially not wired into pipeline** — The plan listed it as a "fallback/complement" but the initial implementation got files directly from `gh pr view --json files` only. The function was exported but unused. **Resolved in hardening pass:** now called as fallback inside `detectPR` when `gh pr view` returns an empty files array but `baseBranch` is available.
 
 6. **`config.test.ts` updated** — Not in original plan's file list. Raising the default `maxContextTokens` broke an existing assertion that expected 100000.
 
@@ -219,3 +238,13 @@ Raise the default from `100000` to `200000`. The current 100k budget is too tigh
 5. **`gh pr view` returns files as `{ path: string }` objects, not plain strings.** The `--json files` field returns an array of objects with a `path` property, not an array of strings. The `GhFile` interface documents this. Future gh field additions may have similar wrapper shapes.
 
 6. **`detectPR` calls `isGhAvailable` on every invocation.** This means two `spawnSync` calls per review (one for `gh --version`, one for `gh pr view`). If performance becomes a concern, consider caching the gh availability check for the lifetime of the process or the review call.
+
+7. **Silent `null` returns hide actionable failures.** The original `detectPR` returned `null` for every failure — gh not installed, auth error, no PR, parse error. The user had no way to know *why* PR context was missing. Discriminated unions with typed failure reasons (`PRDetectionResult`) cost minimal code but dramatically improve debuggability. Apply this pattern to any function where "didn't work" has multiple distinct causes the caller could act on.
+
+8. **Models hallucinate about code in context, not just missing code.** The consensus review false positives occurred with full files in context — GPT-5.2 claimed `realpathSync()` was absent from `bundler.ts` when it was at line 141, and fabricated a code snippet for `config.ts`. The `hasOmittedFiles` gate on verification instructions was therefore insufficient. Anti-hallucination defenses must be always-on, not conditional on context completeness.
+
+9. **Require evidence in the output format, not just the prompt.** Telling the model "verify your claims" in the system prompt is necessary but not sufficient. Adding a structured `**Evidence**: quote (file:line)` field to the Critical Issues template makes it structurally harder to assert a vulnerability without citing code. Defense in depth: system prompt sets the expectation, template format enforces it.
+
+10. **PR changed files from `gh` bypass path validation.** The initial implementation read PR changed files via `readFileEntry()` without the `isSensitivePath()` / `isWithinProject()` checks that `expandPath()` applies to other file categories. Any external data source that produces file paths (CLI output, API responses, config files) should be validated before reading, even if the source is trusted.
+
+11. **Consensus reviews generate false positives at a meaningful rate.** Three of six "critical" findings from the Gemini + OpenAI consensus review were false positives. When consuming automated review output, treat Critical Issues as hypotheses until verified against the actual code. The evidence requirement added to the template helps, but human verification of critical findings remains essential.

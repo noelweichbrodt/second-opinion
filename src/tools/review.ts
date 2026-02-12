@@ -159,6 +159,8 @@ export interface SecondOpinionDryRunOutput {
   budgetWarnings: BudgetWarning[];
   /** Human-readable message about the dry run status */
   message: string;
+  /** Present when PR detection failed (e.g. gh not installed) */
+  prDetectionFailure?: { reason: string; message: string };
 }
 
 export interface SecondOpinionOutput {
@@ -173,6 +175,8 @@ export interface SecondOpinionOutput {
   filesReviewed: number;
   contextTokens: number;
   summary: EgressSummary;
+  /** Present when PR detection failed (e.g. gh not installed) */
+  prDetectionFailure?: { reason: string; message: string };
 }
 
 /**
@@ -253,6 +257,7 @@ export async function executeReview(
       message: hasWarnings
         ? `⚠️ ${bundle.budgetWarnings.length} budget warning(s) - some important files will be omitted`
         : "Ready to send",
+      prDetectionFailure: bundle.prDetectionFailure,
     };
   }
 
@@ -275,12 +280,7 @@ export async function executeReview(
   // 6. Determine temperature (input > config > default)
   const temperature = input.temperature ?? config.temperature;
 
-  // 7. Check if files were omitted due to budget (for system prompt calibration)
-  const hasOmittedFiles = bundle.omittedFiles.some(
-    (f) => f.reason === "budget_exceeded"
-  );
-
-  // 8. Create provider and execute task
+  // 7. Create provider and execute task
   const provider = createProvider(input.provider as ProviderName, config);
   const response = await provider.review({
     instructions,
@@ -289,7 +289,6 @@ export async function executeReview(
     focusAreas: input.focusAreas,
     customPrompt: input.customPrompt,
     temperature,
-    hasOmittedFiles,
   });
 
   // 9. Derive session name if not provided
@@ -336,6 +335,7 @@ export async function executeReview(
     filesReviewed: bundle.files.length,
     contextTokens: bundle.totalTokens,
     summary,
+    prDetectionFailure: bundle.prDetectionFailure,
   };
 }
 

@@ -6,8 +6,6 @@ export interface ReviewRequest {
   customPrompt?: string;
   /** Temperature for LLM generation (0-1). Lower = more focused, higher = more creative. */
   temperature?: number;
-  /** Whether files were omitted from context due to budget constraints */
-  hasOmittedFiles?: boolean;
 }
 
 export interface ReviewResponse {
@@ -22,36 +20,31 @@ export interface ReviewProvider {
 }
 
 /**
- * Calibration text for when files were omitted due to budget constraints
+ * Verification instructions appended to every system prompt to prevent hallucinated claims.
+ * Always included regardless of whether files were omitted — models can fabricate issues
+ * even when the relevant code is in context.
  */
-const CONTEXT_CALIBRATION = `
+const VERIFICATION_REQUIREMENTS = `
 
-## Important: Context Limitations
+## Important: Verification Requirements
 
-This review is based on a subset of the codebase. Some files were omitted due to token limits.
-
-When reviewing:
+When reviewing, you MUST verify claims against the provided code:
 1. Only report issues you can VERIFY in the provided code
-2. If you suspect an issue but cannot see the relevant implementation, mark it as:
-   "⚠️ UNVERIFIED: [description] - relevant code not in context"
-3. Do NOT assume missing code is actually missing from the codebase
-4. Check the "Omitted Files" section before flagging missing implementations`;
+2. For Critical Issues, QUOTE the specific code that demonstrates the problem
+3. If you suspect an issue but cannot find confirming code, mark it as:
+   "⚠️ UNVERIFIED: [description] - could not locate confirming code"
+4. Do NOT assume code is missing or broken without evidence
+5. Search the full provided context before claiming something doesn't exist`;
 
 /**
  * Get the system prompt based on whether a custom task is provided
- * and whether files were omitted from context
  */
-export function getSystemPrompt(hasTask: boolean, hasOmittedFiles?: boolean): string {
-  let prompt = hasTask
+export function getSystemPrompt(hasTask: boolean): string {
+  const base = hasTask
     ? "You are a senior software engineer. Complete the requested task thoroughly and provide clear, actionable output. When relevant, consider whether changes upstream or downstream of the immediate scope would produce a better outcome."
     : "You are a senior software engineer performing a code review. You have seen systems like this evolve over years. Be thorough, constructive, and actionable. Look beyond the immediate diff — consider whether the right change might be above or below the code under review.";
 
-  // Add calibration when files were omitted
-  if (hasOmittedFiles) {
-    prompt += CONTEXT_CALIBRATION;
-  }
-
-  return prompt;
+  return base + VERIFICATION_REQUIREMENTS;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as childProcess from "child_process";
-import { isGhAvailable, detectPR, formatPRMetadata, getPRChangedFiles, PRContext } from "./pr.js";
+import { isGhAvailable, detectPR, formatPRMetadata, getPRChangedFiles, PRContext, PRDetectionResult } from "./pr.js";
 
 vi.mock("child_process", async () => {
   const actual = await vi.importActual<typeof childProcess>("child_process");
@@ -87,21 +87,44 @@ describe("detectPR", () => {
     mockSpawnSync.mockReturnValueOnce(spawnResult({ stdout: JSON.stringify(data) }));
   }
 
-  it("returns null when gh is not available", () => {
+  it("returns gh_not_installed when gh is not available", () => {
     mockSpawnSync.mockReturnValueOnce(
       spawnResult({ status: 1, error: new Error("ENOENT") })
     );
 
-    expect(detectPR("/project")).toBeNull();
+    const result = detectPR("/project");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("gh_not_installed");
+      expect(result.message).toContain("https://cli.github.com/");
+    }
   });
 
-  it("returns null when no PR exists for current branch", () => {
+  it("returns no_pr_found when no PR exists for current branch", () => {
     mockGhAvailable();
     mockSpawnSync.mockReturnValueOnce(
       spawnResult({ status: 1, stderr: "no pull requests found" })
     );
 
-    expect(detectPR("/project")).toBeNull();
+    const result = detectPR("/project");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("no_pr_found");
+    }
+  });
+
+  it("returns gh_command_failed on other gh errors", () => {
+    mockGhAvailable();
+    mockSpawnSync.mockReturnValueOnce(
+      spawnResult({ status: 1, stderr: "HTTP 403: Resource not accessible by integration" })
+    );
+
+    const result = detectPR("/project");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("gh_command_failed");
+      expect(result.message).toContain("403");
+    }
   });
 
   it("parses gh pr view output correctly", () => {
@@ -110,20 +133,21 @@ describe("detectPR", () => {
 
     const result = detectPR("/project");
 
-    expect(result).not.toBeNull();
-    expect(result!.number).toBe(42);
-    expect(result!.title).toBe("Add login feature");
-    expect(result!.body).toBe("This PR adds OAuth login support.");
-    expect(result!.url).toBe("https://github.com/org/repo/pull/42");
-    expect(result!.state).toBe("OPEN");
-    expect(result!.baseBranch).toBe("main");
-    expect(result!.headBranch).toBe("feature/login");
-    expect(result!.labels).toEqual(["enhancement", "auth"]);
-    expect(result!.comments).toHaveLength(1);
-    expect(result!.comments[0].author).toBe("reviewer1");
-    expect(result!.reviews).toHaveLength(1);
-    expect(result!.reviews[0].state).toBe("CHANGES_REQUESTED");
-    expect(result!.changedFiles).toEqual(["/project/src/auth.ts", "/project/src/login.ts"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.pr.number).toBe(42);
+    expect(result.pr.title).toBe("Add login feature");
+    expect(result.pr.body).toBe("This PR adds OAuth login support.");
+    expect(result.pr.url).toBe("https://github.com/org/repo/pull/42");
+    expect(result.pr.state).toBe("OPEN");
+    expect(result.pr.baseBranch).toBe("main");
+    expect(result.pr.headBranch).toBe("feature/login");
+    expect(result.pr.labels).toEqual(["enhancement", "auth"]);
+    expect(result.pr.comments).toHaveLength(1);
+    expect(result.pr.comments[0].author).toBe("reviewer1");
+    expect(result.pr.reviews).toHaveLength(1);
+    expect(result.pr.reviews[0].state).toBe("CHANGES_REQUESTED");
+    expect(result.pr.changedFiles).toEqual(["/project/src/auth.ts", "/project/src/login.ts"]);
   });
 
   it("passes prNumber to gh when provided", () => {
@@ -152,11 +176,15 @@ describe("detectPR", () => {
     expect(prViewCall[1]).not.toContain(expect.stringMatching(/^\d+$/));
   });
 
-  it("returns null on malformed JSON", () => {
+  it("returns parse_error on malformed JSON", () => {
     mockGhAvailable();
     mockSpawnSync.mockReturnValueOnce(spawnResult({ stdout: "not valid json" }));
 
-    expect(detectPR("/project")).toBeNull();
+    const result = detectPR("/project");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("parse_error");
+    }
   });
 
   it("handles missing optional fields gracefully", () => {
@@ -164,12 +192,27 @@ describe("detectPR", () => {
     mockPRView({ number: 1 });
 
     const result = detectPR("/project");
-    expect(result).not.toBeNull();
-    expect(result!.title).toBe("");
-    expect(result!.labels).toEqual([]);
-    expect(result!.comments).toEqual([]);
-    expect(result!.reviews).toEqual([]);
-    expect(result!.changedFiles).toEqual([]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.pr.title).toBe("");
+    expect(result.pr.labels).toEqual([]);
+    expect(result.pr.comments).toEqual([]);
+    expect(result.pr.reviews).toEqual([]);
+    expect(result.pr.changedFiles).toEqual([]);
+  });
+
+  it("falls back to getPRChangedFiles when gh returns empty files", () => {
+    mockGhAvailable();
+    mockPRView({ ...samplePRData, files: [] });
+    // Mock git diff call for fallback
+    mockSpawnSync.mockReturnValueOnce(
+      spawnResult({ stdout: "src/fallback.ts\n" })
+    );
+
+    const result = detectPR("/project");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.pr.changedFiles).toEqual(["/project/src/fallback.ts"]);
   });
 });
 

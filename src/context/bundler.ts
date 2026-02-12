@@ -8,7 +8,7 @@ import {
   SessionContext,
 } from "./session.js";
 import { getAllModifiedFiles, getFileDiff } from "./git.js";
-import { detectPR, formatPRMetadata, PRContext } from "./pr.js";
+import { detectPR, formatPRMetadata, PRContext, PRDetectionResult } from "./pr.js";
 import {
   getDependenciesForFiles,
   getDependentsForFiles,
@@ -290,6 +290,8 @@ export interface ContextBundle {
   };
   /** Warnings about high-priority files being omitted due to budget */
   budgetWarnings: BudgetWarning[];
+  /** Set when PR detection failed for a non-trivial reason (not "no PR found") */
+  prDetectionFailure?: { reason: string; message: string };
 }
 
 interface ReadFileResult {
@@ -548,8 +550,10 @@ export async function bundleContext(
   getBudgetWithSpillover("session", sessionUsed);
 
   // 2b. PR context (auto-detected or explicit prNumber)
-  const prContext = detectPR(projectPath, prNumber);
-  if (prContext) {
+  const prDetection = detectPR(projectPath, prNumber);
+  if (prDetection.ok) {
+    const prContext = prDetection.pr;
+
     // Format PR metadata and subtract from remaining budget
     const prMetadata = formatPRMetadata(prContext);
     const prMetadataTokens = estimateTokens(prMetadata);
@@ -562,16 +566,26 @@ export async function bundleContext(
     };
     bundle.totalTokens += prMetadataTokens;
 
-    // Read PR changed files
+    // Read PR changed files (with path validation)
     const prFiles: FileEntry[] = [];
     for (const filePath of prContext.changedFiles) {
-      if (!addedFiles.has(filePath)) {
-        const result = readFileEntry(filePath, "pr");
-        if (result.entry) {
-          prFiles.push(result.entry);
-          accumulateRedactionStats(result);
-          modifiedFiles.push(filePath);
-        }
+      if (addedFiles.has(filePath)) continue;
+
+      const normalizedPath = path.normalize(filePath);
+      if (isSensitivePath(normalizedPath)) {
+        bundle.omittedFiles.push({ path: filePath, category: "pr", tokenEstimate: 0, reason: "sensitive_path" });
+        continue;
+      }
+      if (!isWithinProject(normalizedPath, projectPath)) {
+        bundle.omittedFiles.push({ path: filePath, category: "pr", tokenEstimate: 0, reason: "outside_project" });
+        continue;
+      }
+
+      const result = readFileEntry(filePath, "pr");
+      if (result.entry) {
+        prFiles.push(result.entry);
+        accumulateRedactionStats(result);
+        modifiedFiles.push(filePath);
       }
     }
 
@@ -583,6 +597,10 @@ export async function bundleContext(
     const prUsed = addFilesWithBudget(prFiles, "pr", prBudget);
     getBudgetWithSpillover("pr", prUsed);
   } else {
+    // Surface failure reason (except no_pr_found which is normal)
+    if (prDetection.reason !== "no_pr_found") {
+      bundle.prDetectionFailure = { reason: prDetection.reason, message: prDetection.message };
+    }
     // No PR — spillover the full pr budget to later categories
     getBudgetWithSpillover("pr", 0);
   }
