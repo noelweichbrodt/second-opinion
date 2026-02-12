@@ -8,6 +8,7 @@ import {
   SessionContext,
 } from "./session.js";
 import { getAllModifiedFiles, getFileDiff } from "./git.js";
+import { detectPR, formatPRMetadata, PRContext, PRDetectionResult } from "./pr.js";
 import {
   getDependenciesForFiles,
   getDependentsForFiles,
@@ -18,7 +19,6 @@ import { findTypeFilesForFiles } from "./types.js";
 import {
   estimateTokens,
   BUDGET_ALLOCATION,
-  CATEGORY_PRIORITY_ORDER,
   BudgetCategory,
 } from "../utils/tokens.js";
 import { redactSecrets } from "../security/redactor.js";
@@ -226,6 +226,7 @@ export interface BundleOptions {
   includeFiles?: string[];
   allowExternalFiles?: boolean;
   maxTokens?: number;
+  prNumber?: number;
 }
 
 export interface FileEntry {
@@ -233,6 +234,7 @@ export interface FileEntry {
   content: string;
   category:
     | "session"
+    | "pr"
     | "git"
     | "dependency"
     | "dependent"
@@ -264,11 +266,16 @@ export interface BudgetWarning {
 
 export interface ContextBundle {
   conversationContext: string;
+  /** Formatted PR metadata markdown (title, body, comments, reviews) */
+  prContext?: string;
+  /** Raw PR metadata for structured access (egress summary, etc.) */
+  prMetadata?: { number: number; url: string; commentsCount: number; reviewsCount: number };
   files: FileEntry[];
   omittedFiles: OmittedFile[];
   totalTokens: number;
   categories: {
     session: number;
+    pr: number;
     git: number;
     dependency: number;
     dependent: number;
@@ -283,8 +290,9 @@ export interface ContextBundle {
   };
   /** Warnings about high-priority files being omitted due to budget */
   budgetWarnings: BudgetWarning[];
+  /** Set when PR detection failed for a non-trivial reason (not "no PR found") */
+  prDetectionFailure?: { reason: string; message: string };
 }
-
 
 interface ReadFileResult {
   entry: FileEntry | null;
@@ -338,6 +346,7 @@ export async function bundleContext(
     includeFiles = [],
     allowExternalFiles = false,
     maxTokens = 100000,
+    prNumber,
   } = options;
 
   const bundle: ContextBundle = {
@@ -347,6 +356,7 @@ export async function bundleContext(
     totalTokens: 0,
     categories: {
       session: 0,
+      pr: 0,
       git: 0,
       dependency: 0,
       dependent: 0,
@@ -361,13 +371,9 @@ export async function bundleContext(
     budgetWarnings: [],
   };
 
-  // Track files we've already added
   const addedFiles = new Set<string>();
-
-  // Track redaction types across all files
   const allRedactedTypes = new Set<string>();
 
-  // Helper to accumulate redaction stats
   const accumulateRedactionStats = (result: ReadFileResult): void => {
     bundle.redactionStats.totalCount += result.redactionCount;
     for (const type of result.redactedTypes) {
@@ -393,15 +399,12 @@ export async function bundleContext(
   }
 
   // Calculate base budget for each category (used for spillover calculation)
-  const baseBudgets: Record<BudgetCategory, number> = {
-    explicit: Math.floor(remainingBudget * BUDGET_ALLOCATION.explicit),
-    session: Math.floor(remainingBudget * BUDGET_ALLOCATION.session),
-    git: Math.floor(remainingBudget * BUDGET_ALLOCATION.git),
-    dependency: Math.floor(remainingBudget * BUDGET_ALLOCATION.dependency),
-    dependent: Math.floor(remainingBudget * BUDGET_ALLOCATION.dependent),
-    test: Math.floor(remainingBudget * BUDGET_ALLOCATION.test),
-    type: Math.floor(remainingBudget * BUDGET_ALLOCATION.type),
-  };
+  const baseBudgets = Object.fromEntries(
+    Object.entries(BUDGET_ALLOCATION).map(([cat, pct]) => [
+      cat,
+      Math.floor(remainingBudget * pct),
+    ])
+  ) as Record<BudgetCategory, number>;
 
   // Track spillover budget from underutilized categories
   let spilloverBudget = 0;
@@ -545,6 +548,62 @@ export async function bundleContext(
   const sessionBudget = baseBudgets.session + Math.floor(spilloverBudget * 0.5);
   const sessionUsed = addFilesWithBudget(sessionFiles, "session", sessionBudget);
   getBudgetWithSpillover("session", sessionUsed);
+
+  // 2b. PR context (auto-detected or explicit prNumber)
+  const prDetection = detectPR(projectPath, prNumber);
+  if (prDetection.ok) {
+    const prContext = prDetection.pr;
+
+    // Format PR metadata and subtract from remaining budget
+    const prMetadata = formatPRMetadata(prContext);
+    const prMetadataTokens = estimateTokens(prMetadata);
+    bundle.prContext = prMetadata;
+    bundle.prMetadata = {
+      number: prContext.number,
+      url: prContext.url,
+      commentsCount: prContext.comments.length,
+      reviewsCount: prContext.reviews.length,
+    };
+    bundle.totalTokens += prMetadataTokens;
+
+    // Read PR changed files (with path validation)
+    const prFiles: FileEntry[] = [];
+    for (const filePath of prContext.changedFiles) {
+      if (addedFiles.has(filePath)) continue;
+
+      const normalizedPath = path.normalize(filePath);
+      if (isSensitivePath(normalizedPath)) {
+        bundle.omittedFiles.push({ path: filePath, category: "pr", tokenEstimate: 0, reason: "sensitive_path" });
+        continue;
+      }
+      if (!isWithinProject(normalizedPath, projectPath)) {
+        bundle.omittedFiles.push({ path: filePath, category: "pr", tokenEstimate: 0, reason: "outside_project" });
+        continue;
+      }
+
+      const result = readFileEntry(filePath, "pr");
+      if (result.entry) {
+        prFiles.push(result.entry);
+        accumulateRedactionStats(result);
+        modifiedFiles.push(filePath);
+      }
+    }
+
+    // Sort by token count (smaller files first to fit more)
+    prFiles.sort((a, b) => a.tokenEstimate - b.tokenEstimate);
+
+    // Process PR files with spillover
+    const prBudget = baseBudgets.pr + Math.floor(spilloverBudget * 0.5);
+    const prUsed = addFilesWithBudget(prFiles, "pr", prBudget);
+    getBudgetWithSpillover("pr", prUsed);
+  } else {
+    // Surface failure reason (except no_pr_found which is normal)
+    if (prDetection.reason !== "no_pr_found") {
+      bundle.prDetectionFailure = { reason: prDetection.reason, message: prDetection.message };
+    }
+    // No PR — spillover the full pr budget to later categories
+    getBudgetWithSpillover("pr", 0);
+  }
 
   // 3. Git changes not in session
   const gitChangedFiles = getAllModifiedFiles(projectPath);
@@ -724,10 +783,17 @@ export function formatBundleAsMarkdown(
     lines.push("---\n");
   }
 
+  // PR context (metadata: title, body, comments, reviews)
+  if (bundle.prContext) {
+    lines.push(bundle.prContext);
+    lines.push("---\n");
+  }
+
   // Group files by category
   const categories: Record<FileEntry["category"], FileEntry[]> = {
     explicit: [],
     session: [],
+    pr: [],
     git: [],
     dependency: [],
     dependent: [],
@@ -742,6 +808,7 @@ export function formatBundleAsMarkdown(
   const categoryLabels: Record<FileEntry["category"], string> = {
     explicit: "Explicitly Included Files",
     session: "Modified Files (from Claude session)",
+    pr: "Pull Request Changed Files",
     git: "Additional Git Changes",
     dependency: "Dependencies (files imported by modified code)",
     dependent: "Dependents (files that import modified code)",

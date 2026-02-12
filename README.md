@@ -33,6 +33,7 @@ Second Opinion reads your Claude Code session to understand what you're working 
 - **Dependents** — Files that import your modified code
 - **Tests** — Test files related to your changes
 - **Types** — TypeScript/JSDoc type definitions
+- **Pull request** — PR metadata, comments, reviews, and changed files (requires `gh` CLI)
 
 ### Custom Tasks
 
@@ -377,6 +378,7 @@ When calling the MCP tool directly:
 - Node.js 18+
 - Claude Code CLI
 - At least one API key (Gemini or OpenAI)
+- [GitHub CLI (`gh`)](https://cli.github.com/) — optional, required for PR context detection
 
 ## License
 

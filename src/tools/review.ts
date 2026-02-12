@@ -106,6 +106,14 @@ export const SecondOpinionInputSchema = z.object({
     .default(100000)
     .describe("Maximum tokens for context"),
 
+  // PR options
+  prNumber: z
+    .number()
+    .optional()
+    .describe(
+      "PR number to review. Auto-detects from current branch if omitted."
+    ),
+
   // LLM options
   temperature: z
     .number()
@@ -151,6 +159,8 @@ export interface SecondOpinionDryRunOutput {
   budgetWarnings: BudgetWarning[];
   /** Human-readable message about the dry run status */
   message: string;
+  /** Present when PR detection failed (e.g. gh not installed) */
+  prDetectionFailure?: { reason: string; message: string };
 }
 
 export interface SecondOpinionOutput {
@@ -165,6 +175,8 @@ export interface SecondOpinionOutput {
   filesReviewed: number;
   contextTokens: number;
   summary: EgressSummary;
+  /** Present when PR detection failed (e.g. gh not installed) */
+  prDetectionFailure?: { reason: string; message: string };
 }
 
 /**
@@ -175,41 +187,35 @@ function buildEgressSummary(
   projectPath: string,
   provider: string
 ): EgressSummary {
-  const projectFilePaths: string[] = [];
-  const externalFilePaths: string[] = [];
+  const projectFilePaths = bundle.files
+    .filter((f) => isWithinProject(f.path, projectPath))
+    .map((f) => f.path);
+  const externalFilePaths = bundle.files
+    .filter((f) => !isWithinProject(f.path, projectPath))
+    .map((f) => f.path);
 
-  for (const file of bundle.files) {
-    if (isWithinProject(file.path, projectPath)) {
-      projectFilePaths.push(file.path);
-    } else {
-      externalFilePaths.push(file.path);
-    }
-  }
-
-  // Get unique parent directories of external files
-  const externalLocations = [
-    ...new Set(externalFilePaths.map((p) => path.dirname(p))),
-  ];
+  const { redactionStats, prMetadata } = bundle;
 
   return {
     projectFilesSent: projectFilePaths.length,
     projectFilePaths,
     externalFilesSent: externalFilePaths.length,
     externalFilePaths,
-    externalLocations,
-    blockedFiles: bundle.omittedFiles.map((f) => ({
-      path: f.path,
-      reason: f.reason,
-    })),
+    externalLocations: [...new Set(externalFilePaths.map((p) => path.dirname(p)))],
+    blockedFiles: bundle.omittedFiles.map((f) => ({ path: f.path, reason: f.reason })),
     provider,
-    // Include redaction stats if any secrets were found
     redactions:
-      bundle.redactionStats.totalCount > 0
-        ? {
-            totalCount: bundle.redactionStats.totalCount,
-            types: bundle.redactionStats.types,
-          }
+      redactionStats.totalCount > 0
+        ? { totalCount: redactionStats.totalCount, types: redactionStats.types }
         : undefined,
+    prContext: prMetadata
+      ? {
+          prNumber: prMetadata.number,
+          prUrl: prMetadata.url,
+          commentsIncluded: prMetadata.commentsCount,
+          reviewsIncluded: prMetadata.reviewsCount,
+        }
+      : undefined,
   };
 }
 
@@ -233,6 +239,7 @@ export async function executeReview(
     includeTests: input.includeTests,
     includeTypes: input.includeTypes,
     maxTokens: input.maxTokens,
+    prNumber: input.prNumber,
   });
 
   // Build egress summary (used for both dry run and actual execution)
@@ -250,6 +257,7 @@ export async function executeReview(
       message: hasWarnings
         ? `⚠️ ${bundle.budgetWarnings.length} budget warning(s) - some important files will be omitted`
         : "Ready to send",
+      prDetectionFailure: bundle.prDetectionFailure,
     };
   }
 
@@ -272,12 +280,7 @@ export async function executeReview(
   // 6. Determine temperature (input > config > default)
   const temperature = input.temperature ?? config.temperature;
 
-  // 7. Check if files were omitted due to budget (for system prompt calibration)
-  const hasOmittedFiles = bundle.omittedFiles.some(
-    (f) => f.reason === "budget_exceeded"
-  );
-
-  // 8. Create provider and execute task
+  // 7. Create provider and execute task
   const provider = createProvider(input.provider as ProviderName, config);
   const response = await provider.review({
     instructions,
@@ -286,15 +289,14 @@ export async function executeReview(
     focusAreas: input.focusAreas,
     customPrompt: input.customPrompt,
     temperature,
-    hasOmittedFiles,
   });
 
-  // 6. Derive session name if not provided
+  // 9. Derive session name if not provided
   const sessionName =
     input.sessionName ||
     deriveSessionName(bundle.conversationContext, "code-review");
 
-  // 7. Write the output files
+  // 10. Write the output files
   const timestamp = new Date().toISOString();
   const metadata: ReviewMetadata = {
     sessionName,
@@ -313,7 +315,7 @@ export async function executeReview(
     response.review
   );
 
-  // 8. Write egress manifest for audit trail
+  // 11. Write egress manifest for audit trail
   const egressManifestFile = writeEgressManifest(
     input.projectPath,
     config.reviewsDir,
@@ -333,6 +335,7 @@ export async function executeReview(
     filesReviewed: bundle.files.length,
     contextTokens: bundle.totalTokens,
     summary,
+    prDetectionFailure: bundle.prDetectionFailure,
   };
 }
 

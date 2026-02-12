@@ -19,7 +19,7 @@ export class OpenAIProvider implements ReviewProvider {
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
     const prompt = buildReviewPrompt(request);
-    const systemPrompt = getSystemPrompt(!!request.task, request.hasOmittedFiles);
+    const systemPrompt = getSystemPrompt(!!request.task);
 
     // Use provided temperature or default to 0.3 for focused output
     const temperature = request.temperature ?? 0.3;

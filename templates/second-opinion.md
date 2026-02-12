@@ -56,6 +56,7 @@ Structure your review as follows:
 ### Critical Issues
 Issues that should be fixed before merging (if any):
 - Issue description
+- **Evidence**: Quote the specific code (file:line) that demonstrates this issue
 - Why it matters
 - Suggested fix
 
@@ -81,7 +82,7 @@ Positive aspects of the implementation:
 
 ## Guidelines
 
-- Be specific: Reference file names and line numbers when possible
+- Be specific: Reference file names and line numbers. For Critical Issues, quote the relevant code
 - Be constructive: Don't just point out problems, suggest solutions
 - Be proportionate: Don't nitpick minor style issues if there are bigger concerns
 - Consider context: The conversation shows what was asked for - review against those requirements

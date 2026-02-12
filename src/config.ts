@@ -9,7 +9,7 @@ export const ConfigSchema = z.object({
   defaultProvider: z.enum(["gemini", "openai"]).default("gemini"),
   geminiModel: z.string().default("gemini-3-flash-preview"),
   openaiModel: z.string().default("gpt-5.2"),
-  maxContextTokens: z.number().default(100000),
+  maxContextTokens: z.number().default(200000),
   reviewsDir: z.string().default("second-opinions"),
   /** Default temperature for LLM generation (0-1) */
   temperature: z.number().min(0).max(1).default(0.3),
