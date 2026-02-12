@@ -27,6 +27,13 @@ export interface EgressSummary {
     totalCount: number;
     types: string[];
   };
+  /** PR context metadata when reviewing a pull request */
+  prContext?: {
+    prNumber: number;
+    prUrl: string;
+    commentsIncluded: number;
+    reviewsIncluded: number;
+  };
 }
 
 /**

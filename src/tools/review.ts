@@ -106,6 +106,14 @@ export const SecondOpinionInputSchema = z.object({
     .default(100000)
     .describe("Maximum tokens for context"),
 
+  // PR options
+  prNumber: z
+    .number()
+    .optional()
+    .describe(
+      "PR number to review. Auto-detects from current branch if omitted."
+    ),
+
   // LLM options
   temperature: z
     .number()
@@ -175,41 +183,35 @@ function buildEgressSummary(
   projectPath: string,
   provider: string
 ): EgressSummary {
-  const projectFilePaths: string[] = [];
-  const externalFilePaths: string[] = [];
+  const projectFilePaths = bundle.files
+    .filter((f) => isWithinProject(f.path, projectPath))
+    .map((f) => f.path);
+  const externalFilePaths = bundle.files
+    .filter((f) => !isWithinProject(f.path, projectPath))
+    .map((f) => f.path);
 
-  for (const file of bundle.files) {
-    if (isWithinProject(file.path, projectPath)) {
-      projectFilePaths.push(file.path);
-    } else {
-      externalFilePaths.push(file.path);
-    }
-  }
-
-  // Get unique parent directories of external files
-  const externalLocations = [
-    ...new Set(externalFilePaths.map((p) => path.dirname(p))),
-  ];
+  const { redactionStats, prMetadata } = bundle;
 
   return {
     projectFilesSent: projectFilePaths.length,
     projectFilePaths,
     externalFilesSent: externalFilePaths.length,
     externalFilePaths,
-    externalLocations,
-    blockedFiles: bundle.omittedFiles.map((f) => ({
-      path: f.path,
-      reason: f.reason,
-    })),
+    externalLocations: [...new Set(externalFilePaths.map((p) => path.dirname(p)))],
+    blockedFiles: bundle.omittedFiles.map((f) => ({ path: f.path, reason: f.reason })),
     provider,
-    // Include redaction stats if any secrets were found
     redactions:
-      bundle.redactionStats.totalCount > 0
-        ? {
-            totalCount: bundle.redactionStats.totalCount,
-            types: bundle.redactionStats.types,
-          }
+      redactionStats.totalCount > 0
+        ? { totalCount: redactionStats.totalCount, types: redactionStats.types }
         : undefined,
+    prContext: prMetadata
+      ? {
+          prNumber: prMetadata.number,
+          prUrl: prMetadata.url,
+          commentsIncluded: prMetadata.commentsCount,
+          reviewsIncluded: prMetadata.reviewsCount,
+        }
+      : undefined,
   };
 }
 
@@ -233,6 +235,7 @@ export async function executeReview(
     includeTests: input.includeTests,
     includeTypes: input.includeTypes,
     maxTokens: input.maxTokens,
+    prNumber: input.prNumber,
   });
 
   // Build egress summary (used for both dry run and actual execution)
@@ -289,12 +292,12 @@ export async function executeReview(
     hasOmittedFiles,
   });
 
-  // 6. Derive session name if not provided
+  // 9. Derive session name if not provided
   const sessionName =
     input.sessionName ||
     deriveSessionName(bundle.conversationContext, "code-review");
 
-  // 7. Write the output files
+  // 10. Write the output files
   const timestamp = new Date().toISOString();
   const metadata: ReviewMetadata = {
     sessionName,
@@ -313,7 +316,7 @@ export async function executeReview(
     response.review
   );
 
-  // 8. Write egress manifest for audit trail
+  // 11. Write egress manifest for audit trail
   const egressManifestFile = writeEgressManifest(
     input.projectPath,
     config.reviewsDir,

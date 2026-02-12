@@ -89,6 +89,10 @@ The reviewer sees the same context Claude had, plus related code for full unders
                 default: 100000,
                 description: "Maximum tokens for context",
               },
+              prNumber: {
+                type: "number",
+                description: "PR number to review. Auto-detects from current branch if omitted.",
+              },
               sessionName: {
                 type: "string",
                 description: "Name for this review (used in output filename)",

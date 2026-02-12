@@ -20,8 +20,9 @@ export function estimateTokens(text: string): number {
  */
 export const BUDGET_ALLOCATION = {
   explicit: 0.15,
-  session: 0.3,
-  git: 0.1,
+  session: 0.2,
+  pr: 0.15,
+  git: 0.05,
   dependency: 0.15,
   dependent: 0.15,
   test: 0.1,
@@ -38,6 +39,7 @@ export type BudgetCategory = keyof typeof BUDGET_ALLOCATION;
 export const CATEGORY_PRIORITY_ORDER: BudgetCategory[] = [
   "explicit",   // User explicitly requested - highest priority
   "session",    // Claude worked on these - critical context
+  "pr",         // PR changed files
   "git",        // Other git changes
   "dependency", // Files imported by modified code
   "dependent",  // Files that import modified code
