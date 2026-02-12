@@ -1,0 +1,487 @@
+# Second Opinion MCP Server
+
+An MCP server for Claude Code that enables async code reviews from alternative LLM providers (Gemini, ChatGPT).
+
+## Overview
+
+This MCP server exposes a `second_opinion` tool that Claude Code can invoke. When called, it:
+1. Reads the current conversation context from Claude Code session files
+2. Gathers specified repository files
+3. Sends the combined context to Gemini or GPT for review
+4. Returns the external model's feedback
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Claude Code                               │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │  User invokes: /second-opinion                              │ │
+│  │  Claude packages context and calls MCP tool                 │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │ MCP Protocol (stdio)
+                                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Second Opinion MCP Server                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
+│  │ Context      │  │ File         │  │ Provider              │  │
+│  │ Collector    │  │ Bundler      │  │ Router                │  │
+│  │              │  │              │  │ (Gemini/GPT)          │  │
+│  └──────────────┘  └──────────────┘  └───────────────────────┘  │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │
+                    ┌─────────────────┼─────────────────┐
+                    ▼                 ▼                 ▼
+              ┌──────────┐     ┌──────────────┐  ┌────────────┐
+              │ Gemini   │     │ OpenAI       │  │ Future     │
+              │ API      │     │ API (GPT)    │  │ Providers  │
+              └──────────┘     └──────────────┘  └────────────┘
+```
+
+## Project Structure
+
+```
+second-opinion/
+├── package.json
+├── tsconfig.json
+├── .env.example
+├── src/
+│   ├── index.ts              # MCP server entry point
+│   ├── server.ts             # MCP server setup
+│   ├── tools/
+│   │   └── review.ts         # second_opinion tool implementation
+│   ├── context/
+│   │   ├── session.ts        # Parse Claude Code session JSONL
+│   │   ├── git.ts            # Get modified files from git diff
+│   │   ├── imports.ts        # Parse import graph (dependencies/dependents)
+│   │   ├── tests.ts          # Find corresponding test files
+│   │   ├── types.ts          # Extract referenced type definitions
+│   │   └── bundler.ts        # Orchestrate context with token budget
+│   ├── providers/
+│   │   ├── base.ts           # Provider interface
+│   │   ├── gemini.ts         # Google Gemini integration
+│   │   └── openai.ts         # OpenAI GPT integration
+│   ├── output/
+│   │   └── writer.ts         # Write reviews to markdown files
+│   └── config.ts             # Configuration management
+├── templates/
+│   └── second-opinion.md     # Default review instructions (copied to ~/.config on install)
+├── CLAUDE.md                 # Instructions for Claude Code skill
+└── README.md
+```
+
+## Configuration Files
+
+### `second-opinion.md` (Review Instructions)
+
+A global markdown file that provides default direction to the reviewing LLM. Located at:
+- `~/.config/second-opinion/second-opinion.md` (primary)
+- Or alongside the MCP server installation
+
+```markdown
+# Second Opinion Instructions
+
+## Your Role
+You are a code reviewer providing a second opinion on code changes.
+Be constructive, specific, and actionable.
+
+## Review Focus
+- Security vulnerabilities and best practices
+- Performance considerations
+- Code clarity and maintainability
+- Error handling and edge cases
+- Testing coverage
+
+## Output Format
+Structure your review with:
+1. Summary (2-3 sentences)
+2. Critical issues (if any)
+3. Suggestions for improvement
+4. What's done well
+```
+
+**Optional project override:** Users can place a `second-opinion.md` in their project root to override or extend the global config for project-specific instructions.
+
+The MCP server will:
+1. Load `~/.config/second-opinion/second-opinion.md` (global default)
+2. If project has local `second-opinion.md`, use that instead (or merge)
+3. Fall back to built-in generic prompt if neither exists
+
+### Review Output Files
+
+Reviews are written to: `reviews/[session-name].[provider].review.md`
+
+Example: `reviews/fix-auth-bug.gemini.review.md`
+
+```markdown
+# Code Review - fix-auth-bug
+
+**Provider:** Gemini 2.0 Flash
+**Date:** 2024-02-03T15:42:00Z
+**Session:** fix-auth-bug
+
+## Summary
+[High-level summary of findings]
+
+## Detailed Review
+[Full review content from the LLM]
+
+## Files Reviewed
+- src/auth/login.ts
+- src/auth/session.ts
+
+---
+*Generated by second-opinion MCP server*
+```
+
+## MCP Tool Definition
+
+### `second_opinion`
+
+**Description:** Get an async code review from an external LLM (Gemini or GPT)
+
+**Input Schema:**
+```typescript
+{
+  // Required
+  provider: "gemini" | "openai",         // Which LLM to use
+  projectPath: string,                   // Path to the project being reviewed
+
+  // Context options
+  sessionId?: string,                    // Claude Code session ID (defaults to current)
+  includeConversation?: boolean,         // Include conversation context (default: true)
+
+  // Smart context (default behavior)
+  contextMode?: "smart" | "manual",      // Smart auto-selects files; manual uses explicit list
+
+  // For contextMode: "smart" (default)
+  includeDependencies?: boolean,         // Include files imported by modified files (default: true)
+  includeDependents?: boolean,           // Include files that import modified files (default: true)
+  includeTests?: boolean,                // Include corresponding test files (default: true)
+  maxTokens?: number,                    // Token budget (default: 100000)
+
+  // For contextMode: "manual"
+  files?: string[],                      // Explicit file paths to include
+  directories?: string[],                // Directories with glob patterns
+
+  // Review options
+  sessionName?: string,                  // Name for output file (auto-derived if not provided)
+  customPrompt?: string,                 // Additional instructions for this review
+  focusAreas?: string[],                 // Specific areas to focus on
+}
+```
+
+**Output:**
+```typescript
+{
+  review: string,                        // The external model's review
+  reviewFile: string,                    // Path to the written review file
+  provider: string,                      // Which provider was used
+  model: string,                         // Specific model used
+  tokensUsed?: number,                   // Token usage if available
+  timestamp: string
+}
+```
+
+## Implementation Steps
+
+### Phase 1: Project Setup
+- [ ] Initialize Node.js/TypeScript project
+- [ ] Install dependencies (@modelcontextprotocol/sdk, openai, @google/generative-ai)
+- [ ] Set up TypeScript configuration
+- [ ] Create basic MCP server scaffold
+
+### Phase 2: Context Collection
+- [ ] Implement session file reader (parse ~/.claude/projects/*/[session].jsonl)
+- [ ] Extract files read/edited from session transcript
+- [ ] Read second-opinion.md (global, then project override)
+- [ ] Implement smart file bundler (see Context Strategy below)
+- [ ] Handle large contexts (truncation, prioritization)
+
+### Phase 2.5: Output Writing
+- [ ] Create reviews/ directory if needed
+- [ ] Write reviews to [session-name].[provider].review.md
+- [ ] Format review output with metadata header
+
+### Phase 3: Provider Integrations
+- [ ] Define provider interface
+- [ ] Implement Gemini provider (using @google/generative-ai)
+- [ ] Implement OpenAI provider (using openai SDK)
+- [ ] Add model selection and configuration
+
+### Phase 4: MCP Tool
+- [ ] Define tool schema
+- [ ] Implement tool handler
+- [ ] Add error handling and validation
+
+### Phase 5: Claude Code Integration
+- [ ] Create /second-opinion skill in CLAUDE.md
+- [ ] Test with `claude mcp add`
+- [ ] Document setup process
+
+## Configuration
+
+Environment variables:
+```bash
+# Required (at least one)
+GOOGLE_API_KEY=           # For Gemini
+OPENAI_API_KEY=           # For OpenAI/GPT
+
+# Optional
+DEFAULT_PROVIDER=gemini   # Default provider to use
+GEMINI_MODEL=gemini-2.0-flash-exp  # Gemini model
+OPENAI_MODEL=gpt-4o       # OpenAI model
+MAX_CONTEXT_TOKENS=100000 # Max tokens to send
+REVIEWS_DIR=reviews       # Directory for review output files (relative to project)
+```
+
+Config file locations:
+```
+~/.config/second-opinion/
+├── second-opinion.md     # Global review instructions
+└── config.json           # Optional: API keys, default provider, etc.
+```
+
+## Claude Code Skill (/second-opinion)
+
+The CLAUDE.md file will define a skill that:
+1. Gathers relevant context (conversation summary, modified files)
+2. Invokes the `second_opinion` MCP tool
+3. Presents the review to the user
+
+Example skill invocation flow:
+```
+User: /second-opinion
+
+Claude:
+1. Identifies files changed in current session
+2. Summarizes the conversation context
+3. Derives a session name from the work (e.g., "add-user-auth")
+4. Calls second_opinion tool with:
+   - provider=gemini
+   - projectPath=/path/to/project
+   - files=[...]
+   - sessionName="add-user-auth"
+   - includeSession=true
+5. Returns: "Review written to reviews/add-user-auth.gemini.review.md"
+6. Optionally summarizes key findings inline
+```
+
+## Dependencies
+
+```json
+{
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@google/generative-ai": "^0.21.0",
+    "openai": "^4.0.0",
+    "zod": "^3.23.0",
+    "glob": "^11.0.0",
+    "tiktoken": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.0.0"
+  }
+}
+```
+
+Note: For import parsing, we'll use regex-based extraction initially (fast, no AST). Can add `@typescript-eslint/parser` later if more precision needed.
+
+## Usage
+
+### Installation
+```bash
+cd second-opinion
+npm install
+npm run build
+
+# Add to Claude Code
+claude mcp add second-opinion -- node /path/to/second-opinion/dist/index.js
+```
+
+### Manual invocation (for testing)
+```bash
+# Run server directly
+npm start
+
+# Or with tsx for development
+npx tsx src/index.ts
+```
+
+## Context Strategy (Smart File Selection)
+
+Rather than sending the entire repo (wasteful) or just modified files (insufficient), we build a focused context package that gives the reviewer the same context Claude had, plus dependency awareness.
+
+### Data Sources
+
+#### 1. Session Transcript (Primary Source)
+Parse `~/.claude/projects/{project}/{sessionId}.jsonl` to extract:
+
+```typescript
+interface SessionContext {
+  // Files Claude interacted with
+  filesRead: string[];           // Read tool inputs
+  filesWritten: string[];        // Write tool inputs (new files)
+  filesEdited: string[];         // Edit tool inputs (modified files)
+
+  // What Claude actually saw (from tool results)
+  fileContents: Map<string, string>;  // tool_result content for Read ops
+
+  // Conversation flow
+  conversation: Array<{
+    role: "user" | "assistant";
+    content: string;
+    timestamp: string;
+  }>;
+}
+```
+
+This gives us **identical context** to what Claude had when making changes.
+
+#### 2. Git Diff (Supplementary)
+Catch any changes not in session (manual edits, other tools):
+```bash
+git diff --name-only          # Unstaged changes
+git diff --cached --name-only # Staged changes
+```
+
+### File Categories (in priority order)
+
+| Priority | Category | Source | Budget |
+|----------|----------|--------|--------|
+| 1 | **Session files** | Files Claude read/wrote/edited | 35% |
+| 2 | **Git changes** | Files modified but not in session | 10% |
+| 3 | **Dependencies** | Files imported by modified code | 20% |
+| 4 | **Dependents** | Files that import modified code | 15% |
+| 5 | **Tests** | Corresponding test files | 15% |
+| 6 | **Types** | Shared interfaces/types referenced | 5% |
+
+### Dependency Analysis
+
+For JS/TS projects, parse imports to build the dependency graph:
+
+```typescript
+// From modified file: src/auth/login.ts
+import { User } from '../types/user';        // → dependency
+import { hashPassword } from '../utils/crypto'; // → dependency
+
+// Find dependents by scanning project:
+// src/pages/LoginPage.tsx imports './auth/login' → dependent
+// src/api/routes.ts imports './auth/login'       → dependent
+```
+
+### Test File Discovery
+
+Match modified files to their tests:
+```
+src/auth/login.ts →
+  - src/auth/login.test.ts
+  - src/auth/login.spec.ts
+  - src/auth/__tests__/login.ts
+  - tests/auth/login.test.ts
+```
+
+### Type Definition Extraction
+
+Find shared types referenced by modified code:
+```typescript
+// Scan for imports from common type locations:
+import { User } from '@/types/user';
+import { ApiResponse } from '../interfaces';
+import type { Config } from './config.d.ts';
+```
+
+### Implementation
+
+```
+src/context/
+├── session.ts      # Parse session JSONL, extract files + conversation
+├── git.ts          # Get modified files from git diff
+├── imports.ts      # Parse import graph (dependencies/dependents)
+├── tests.ts        # Find corresponding test files
+├── types.ts        # Extract referenced type definitions
+└── bundler.ts      # Orchestrate collection with token budget
+```
+
+### Token Budget Management
+
+```typescript
+interface ContextBudget {
+  maxTokens: number;          // e.g., 100000
+  priorities: {
+    session: 0.35,            // 35% for files Claude interacted with
+    gitChanges: 0.10,         // 10% for other git changes
+    dependencies: 0.20,       // 20% for imports
+    dependents: 0.15,         // 15% for importers
+    tests: 0.15,              // 15% for tests
+    types: 0.05,              // 5% for type defs
+  }
+}
+```
+
+If we exceed budget:
+1. Truncate lowest-priority categories first (types → tests → dependents)
+2. Within a category, prioritize by relevance (direct imports over transitive)
+3. For large files, include only the relevant sections
+4. Fall back to file structure summary for context-only files
+
+### Conversation Context
+
+From the session transcript, include:
+- **User messages**: The task/intent (what was asked)
+- **Assistant text responses**: Claude's reasoning and explanations
+- **Skip**: Raw tool calls, large code blocks (already in files)
+
+This gives the reviewer understanding of *why* changes were made, not just *what* changed.
+
+### Output Format for Reviewer
+
+```markdown
+## Conversation Context
+[User request and Claude's approach]
+
+## Modified Files (from session)
+### src/auth/login.ts
+[Full file content or diff]
+
+## Dependencies
+### src/types/user.ts
+[File content]
+
+## Dependents (may be affected)
+### src/pages/LoginPage.tsx
+[File content]
+
+## Related Tests
+### src/auth/login.test.ts
+[File content]
+```
+
+## Key Design Decisions
+
+1. **Session context via file reading**: Rather than requiring conversation export, we read directly from ~/.claude/projects/ session files
+
+2. **Flexible file selection**: Users can specify individual files, directories with globs, or let Claude decide what's relevant
+
+3. **Provider abstraction**: Easy to add new providers (Claude API, Ollama, etc.)
+
+4. **Skill-based invocation**: The /second-opinion skill handles the context packaging so users get a simple interface
+
+5. **Token management**: Built-in handling for large contexts to stay within provider limits
+
+6. **Global config with project override**: `~/.config/second-opinion/second-opinion.md` provides default review instructions across all projects, with optional per-project override
+
+7. **Persistent review output**: Reviews written to `reviews/` directory provide a durable record, can be referenced later, and can be checked into version control for team visibility
+
+## Future Enhancements
+
+- [ ] Streaming responses
+- [ ] Diff-based reviews (only review changes)
+- [ ] Timestamped review filenames (e.g., `fix-auth.gemini.2024-02-03T15-42.review.md`)
+- [ ] Multiple provider comparison mode (run same review on Gemini AND GPT)
+- [ ] Custom review templates in second-opinion.md
+- [ ] Integration with PR workflows (auto-attach reviews to PRs)
+- [ ] Review diffing (compare current vs previous review)
