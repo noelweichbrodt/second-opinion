@@ -76,7 +76,7 @@ describe("OpenAIProvider", () => {
 
     const callArgs = mockCreate.mock.calls[0][0];
     expect(callArgs.messages[0].content).toContain("code review");
-    expect(callArgs.messages[0].content).toContain("constructive");
+    expect(callArgs.messages[0].content).toContain("knowledge sharing");
   });
 
   it("includes task-specific system prompt when task provided", async () => {

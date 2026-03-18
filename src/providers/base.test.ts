@@ -11,20 +11,27 @@ describe("getSystemPrompt", () => {
   it("returns review prompt when hasTask is false", () => {
     const prompt = getSystemPrompt(false);
     expect(prompt).toContain("code review");
-    expect(prompt).toContain("constructive");
+    expect(prompt).toContain("knowledge sharing");
     expect(prompt).toContain("beyond");
   });
 
   it("encourages lateral thinking in review prompt", () => {
     const prompt = getSystemPrompt(false);
-    expect(prompt).toContain("senior software engineer");
-    expect(prompt).toContain("above or below");
+    expect(prompt).toContain("staff software engineer");
+    expect(prompt).toContain("upstream or downstream");
   });
 
   it("encourages lateral thinking in task prompt", () => {
     const prompt = getSystemPrompt(true);
-    expect(prompt).toContain("senior software engineer");
+    expect(prompt).toContain("staff software engineer");
     expect(prompt).toContain("upstream or downstream");
+  });
+
+  it("includes phased methodology guidance in review prompt", () => {
+    const prompt = getSystemPrompt(false);
+    expect(prompt).toContain("phases");
+    expect(prompt).toContain("interrogate");
+    expect(prompt).toContain("Ground every finding");
   });
 
   it("always includes verification requirements in review prompt", () => {
@@ -137,5 +144,49 @@ describe("buildReviewPrompt", () => {
 
     expect(prompt).toContain("---");
     expect(prompt).toContain("# Code Context");
+  });
+
+  it("includes language hints when provided", () => {
+    const request: ReviewRequest = {
+      instructions: "Guidelines",
+      context: "Code",
+      languageHints: "## TypeScript-Specific Pitfalls\n\n- Watch for `any` abuse",
+    };
+
+    const prompt = buildReviewPrompt(request);
+
+    expect(prompt).toContain("TypeScript-Specific Pitfalls");
+    expect(prompt).toContain("Watch for `any` abuse");
+    // Hints should appear before Code Context
+    const hintsIndex = prompt.indexOf("TypeScript-Specific");
+    const contextIndex = prompt.indexOf("# Code Context");
+    expect(hintsIndex).toBeLessThan(contextIndex);
+  });
+
+  it("includes language hints in task mode", () => {
+    const request: ReviewRequest = {
+      instructions: "Guidelines",
+      context: "Code",
+      task: "Review",
+      languageHints: "## Go-Specific Pitfalls\n\n- Check for unchecked errors",
+    };
+
+    const prompt = buildReviewPrompt(request);
+
+    expect(prompt).toContain("Go-Specific Pitfalls");
+    const hintsIndex = prompt.indexOf("Go-Specific");
+    const contextIndex = prompt.indexOf("# Code Context");
+    expect(hintsIndex).toBeLessThan(contextIndex);
+  });
+
+  it("omits language hints section when not provided", () => {
+    const request: ReviewRequest = {
+      instructions: "Guidelines",
+      context: "Code",
+    };
+
+    const prompt = buildReviewPrompt(request);
+
+    expect(prompt).not.toContain("Specific Pitfalls");
   });
 });

@@ -6,6 +6,8 @@ export interface ReviewRequest {
   customPrompt?: string;
   /** Temperature for LLM generation (0-1). Lower = more focused, higher = more creative. */
   temperature?: number;
+  /** Language-specific pitfall hints to inject into the prompt (e.g., TypeScript gotchas). */
+  languageHints?: string;
 }
 
 export interface ReviewResponse {
@@ -30,9 +32,10 @@ const VERIFICATION_REQUIREMENTS = `
 
 When reviewing, you MUST verify claims against the provided code:
 1. Only report issues you can VERIFY in the provided code
-2. For Critical Issues, QUOTE the specific code that demonstrates the problem
+2. For **[BLOCKING]** findings, QUOTE the specific code that demonstrates the problem
 3. If you suspect an issue but cannot find confirming code, mark it as:
-   "⚠️ UNVERIFIED: [description] - could not locate confirming code"
+   "UNVERIFIED: [description] - could not locate confirming code"
+   and list it under Questions, not as a confirmed finding
 4. Do NOT assume code is missing or broken without evidence
 5. Search the full provided context before claiming something doesn't exist`;
 
@@ -41,8 +44,13 @@ When reviewing, you MUST verify claims against the provided code:
  */
 export function getSystemPrompt(hasTask: boolean): string {
   const base = hasTask
-    ? "You are a senior software engineer. Complete the requested task thoroughly and provide clear, actionable output. When relevant, consider whether changes upstream or downstream of the immediate scope would produce a better outcome."
-    : "You are a senior software engineer performing a code review. You have seen systems like this evolve over years. Be thorough, constructive, and actionable. Look beyond the immediate diff — consider whether the right change might be above or below the code under review.";
+    ? "You are a staff software engineer. Complete the requested task thoroughly and provide clear, actionable output. When relevant, consider whether changes upstream or downstream of the immediate scope would produce a better outcome."
+    : "You are a staff software engineer performing a code review. "
+      + "Your goal is knowledge sharing and catching real issues — not gatekeeping. "
+      + "Think in phases: understand the change, assess the architecture, analyze details, "
+      + "then interrogate your own findings before presenting them. "
+      + "Ground every finding in specific files and lines of code. "
+      + "Look beyond the immediate diff — the right fix may live upstream or downstream.";
 
   return base + VERIFICATION_REQUIREMENTS;
 }
@@ -113,6 +121,14 @@ export function buildReviewPrompt(request: ReviewRequest): string {
       parts.push(request.customPrompt);
       parts.push("");
     }
+  }
+
+  // Language-specific hints (if applicable)
+  if (request.languageHints) {
+    parts.push("---");
+    parts.push("");
+    parts.push(request.languageHints);
+    parts.push("");
   }
 
   // Separator

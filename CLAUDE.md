@@ -101,11 +101,30 @@ User: /second-opinion consensus Security audit this code.
 
 Claude: I'll get perspectives from both Gemini and OpenAI.
 [Calls second_opinion tool with provider: "consensus"]
+[Tool returns both reviews]
+Claude: Both reviews are in. Let me synthesize the findings.
+[Claude reads both reviews and writes synthesis to the output file]
 Claude: Consensus review complete! Written to second-opinions/add-user-auth.consensus.security-audit.md
 - Both models analyzed 12 files
-- Key agreements: [areas where both agree]
-- Notable differences: [where perspectives differ]
+- Agreements: [high-confidence issues both flagged]
+- Unique insights: [points only one reviewer caught]
+- Disagreements: [where they differ, with Claude's assessment]
+- Prioritized action list: [merged recommendations]
 ```
+
+**Consensus synthesis — Claude's role:**
+
+In consensus mode, the MCP tool calls both providers and returns both reviews.
+Claude then synthesizes the results using its full session context, covering:
+
+1. **Agreements**: Issues both reviewers flagged — highest confidence findings
+2. **Unique Insights**: Points only one reviewer caught — may reveal blind spots
+3. **Disagreements**: Where they conflict — Claude assesses which is correct based on codebase knowledge
+4. **Prioritized Action List**: Merged recommendations ordered by impact
+
+Claude writes the synthesis into the `## Synthesis` section of the output file.
+This approach leverages Claude's richer context (full conversation history, codebase understanding)
+to produce a more informed synthesis than either external model could alone.
 
 **With inline options:**
 ```

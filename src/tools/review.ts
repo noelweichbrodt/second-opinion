@@ -19,6 +19,10 @@ import {
 } from "../output/writer.js";
 import { getRateLimiter, resetRateLimiter } from "../security/rate-limiter.js";
 import { redactSecrets } from "../security/redactor.js";
+import {
+  detectDominantLanguage,
+  getLanguageHints,
+} from "../utils/language.js";
 
 /**
  * Validate that a project path is safe to use
@@ -280,6 +284,13 @@ export async function executeReview(
   // 6. Determine temperature (input > config > default)
   const temperature = input.temperature ?? config.temperature;
 
+  // 6a. Detect dominant language and get hints
+  const dominantLang = detectDominantLanguage(
+    bundle.files.map((f) => f.path)
+  );
+  const languageHints =
+    dominantLang ? getLanguageHints(dominantLang) : undefined;
+
   // 7. Create provider and execute task
   const provider = createProvider(input.provider as ProviderName, config);
   const response = await provider.review({
@@ -289,6 +300,7 @@ export async function executeReview(
     focusAreas: input.focusAreas,
     customPrompt: input.customPrompt,
     temperature,
+    languageHints: languageHints || undefined,
   });
 
   // 9. Derive session name if not provided
