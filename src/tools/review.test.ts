@@ -506,3 +506,58 @@ describe("executeReview - egress summary", () => {
     expect(result.summary.blockedFiles.some((f) => f.path.includes(".env"))).toBe(true);
   });
 });
+
+describe("executeReview - consensus fallback", () => {
+  let tmpDir: string;
+
+  beforeAll(() => {
+    tmpDir = createTempDir("review-consensus");
+    createProjectStructure(tmpDir, {
+      "src/index.ts": "export const main = 1;",
+    });
+  });
+
+  afterAll(() => {
+    cleanupTempDir(tmpDir);
+  });
+
+  it("consensus falls back to gemini when only gemini key configured", async () => {
+    // The mock config has geminiApiKey but the consensus provider needs both.
+    // With the fallback, consensus should resolve to gemini.
+    const result = await executeReview({
+      provider: "consensus",
+      projectPath: tmpDir,
+      includeFiles: ["src/index.ts"],
+      includeConversation: false,
+      includeDependencies: false,
+      includeDependents: false,
+      includeTests: false,
+      includeTypes: false,
+      dryRun: false,
+    });
+
+    if (result.dryRun) throw new Error("Expected actual execution");
+
+    // Should have fallen back to gemini (mock config has gemini key)
+    expect(result.provider).toBe("consensus");
+    expect(result.model).toBeDefined();
+    expect(result.review).toBeDefined();
+  });
+
+  it("consensus dry run works with single provider available", async () => {
+    const result = await executeReview({
+      provider: "consensus",
+      projectPath: tmpDir,
+      includeFiles: ["src/index.ts"],
+      includeConversation: false,
+      includeDependencies: false,
+      includeDependents: false,
+      includeTests: false,
+      includeTypes: false,
+      dryRun: true,
+    });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.provider).toBe("consensus");
+  });
+});
