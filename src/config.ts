@@ -6,7 +6,7 @@ import * as os from "os";
 export const ConfigSchema = z.object({
   geminiApiKey: z.string().optional(),
   openaiApiKey: z.string().optional(),
-  defaultProvider: z.enum(["gemini", "openai"]).default("gemini"),
+  defaultProvider: z.enum(["gemini", "openai", "consensus"]).default("consensus"),
   geminiModel: z.string().default("gemini-3-flash-preview"),
   openaiModel: z.string().default("gpt-5.2"),
   maxContextTokens: z.number().default(200000),

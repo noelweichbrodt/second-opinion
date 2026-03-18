@@ -291,8 +291,17 @@ export async function executeReview(
   const languageHints =
     dominantLang ? getLanguageHints(dominantLang) : undefined;
 
-  // 7. Create provider and execute task
-  const provider = createProvider(input.provider as ProviderName, config);
+  // 7. Resolve provider — consensus falls back to single provider when only one key available
+  let effectiveProvider = input.provider as ProviderName;
+  if (effectiveProvider === "consensus") {
+    if (!config.geminiApiKey && !config.openaiApiKey) {
+      throw new Error("At least one API key (GEMINI_API_KEY or OPENAI_API_KEY) is required");
+    }
+    if (!config.geminiApiKey || !config.openaiApiKey) {
+      effectiveProvider = config.geminiApiKey ? "gemini" : "openai";
+    }
+  }
+  const provider = createProvider(effectiveProvider, config);
   const response = await provider.review({
     instructions,
     context: contextMarkdown,

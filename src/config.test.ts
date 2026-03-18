@@ -68,7 +68,7 @@ describe("loadConfig", () => {
   it("applies schema defaults when no config provided", () => {
     const config = loadConfig();
 
-    expect(config.defaultProvider).toBe("gemini");
+    expect(config.defaultProvider).toBe("consensus");
     expect(config.geminiModel).toBe("gemini-3-flash-preview");
     expect(config.openaiModel).toBe("gpt-5.2");
     expect(config.maxContextTokens).toBe(200000);

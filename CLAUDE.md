@@ -45,7 +45,7 @@ When the user invokes the skill:
    - First word may be provider (`gemini`, `openai`, or `consensus`)
    - Words with `=` are options (e.g., `temp=0.8`, `maxTokens=50000`)
    - Remaining text is the task (if any)
-   - If no provider specified, use default (gemini)
+   - If no provider specified, use default (consensus)
 
 2. Derive a session name from the work done (e.g., "add-user-auth", "fix-login-bug")
 
@@ -295,7 +295,7 @@ claude mcp add second-opinion \
 | OPENAI_API_KEY | - | API key for OpenAI |
 | GEMINI_MODEL | gemini-2.0-flash-exp | Gemini model to use |
 | OPENAI_MODEL | gpt-4o | OpenAI model to use |
-| DEFAULT_PROVIDER | gemini | Default provider if not specified |
+| DEFAULT_PROVIDER | consensus | Default provider if not specified (falls back to single provider if only one key configured) |
 | MAX_CONTEXT_TOKENS | 100000 | Token budget for context |
 | TEMPERATURE | 0.3 | Default LLM temperature (0-1) |
 | RATE_LIMIT_WINDOW_MS | 60000 | Rate limit window in milliseconds |
