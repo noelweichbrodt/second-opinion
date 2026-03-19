@@ -112,7 +112,7 @@ describe("OpenAIProvider", () => {
     await provider.review(request);
 
     const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.messages[1].content).toContain("# Task");
+    expect(callArgs.messages[1].content).toContain("<task>");
     expect(callArgs.messages[1].content).toContain("Analyze security vulnerabilities");
   });
 

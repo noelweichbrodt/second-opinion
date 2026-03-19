@@ -252,15 +252,26 @@ export async function executeReview(
     prNumber: input.prNumber,
   });
 
+  // Resolve provider early for dry run — consensus falls back to single provider
+  let effectiveProvider = input.provider as ProviderName;
+  if (effectiveProvider === "consensus") {
+    if (!config.geminiApiKey && !config.openaiApiKey) {
+      throw new Error("At least one API key (GEMINI_API_KEY or OPENAI_API_KEY) is required");
+    }
+    if (!config.geminiApiKey || !config.openaiApiKey) {
+      effectiveProvider = config.geminiApiKey ? "gemini" : "openai";
+    }
+  }
+
   // Build egress summary (used for both dry run and actual execution)
-  const summary = buildEgressSummary(bundle, input.projectPath, input.provider);
+  const summary = buildEgressSummary(bundle, input.projectPath, effectiveProvider);
 
   // 2. If dry run, return preview without calling external API
   if (input.dryRun) {
     const hasWarnings = bundle.budgetWarnings.length > 0;
     return {
       dryRun: true,
-      provider: input.provider,
+      provider: effectiveProvider,
       summary,
       totalTokens: bundle.totalTokens,
       budgetWarnings: bundle.budgetWarnings,
@@ -297,17 +308,7 @@ export async function executeReview(
   const languageHints =
     dominantLang ? getLanguageHints(dominantLang) : undefined;
 
-  // 7. Resolve provider — consensus falls back to single provider when only one key available
-  let effectiveProvider = input.provider as ProviderName;
-  if (effectiveProvider === "consensus") {
-    if (!config.geminiApiKey && !config.openaiApiKey) {
-      throw new Error("At least one API key (GEMINI_API_KEY or OPENAI_API_KEY) is required");
-    }
-    if (!config.geminiApiKey || !config.openaiApiKey) {
-      effectiveProvider = config.geminiApiKey ? "gemini" : "openai";
-    }
-  }
-  // 7a. Determine maxOutputTokens (input > config > default)
+  // 7. Determine maxOutputTokens (input > config > default)
   const maxOutputTokens = input.maxOutputTokens ?? config.maxOutputTokens;
 
   const provider = createProvider(effectiveProvider, config);
@@ -331,7 +332,7 @@ export async function executeReview(
   const timestamp = new Date().toISOString();
   const metadata: ReviewMetadata = {
     sessionName,
-    provider: input.provider,
+    provider: effectiveProvider,
     model: response.model,
     timestamp,
     filesReviewed: bundle.files.map((f) => f.path),
@@ -359,7 +360,7 @@ export async function executeReview(
     review: response.review,
     reviewFile,
     egressManifestFile,
-    provider: input.provider,
+    provider: effectiveProvider,
     model: response.model,
     tokensUsed: response.tokensUsed,
     timestamp,

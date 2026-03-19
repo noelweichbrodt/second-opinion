@@ -38,7 +38,11 @@ describe("loadConfig", () => {
     delete process.env.GEMINI_MODEL;
     delete process.env.OPENAI_MODEL;
     delete process.env.MAX_CONTEXT_TOKENS;
+    delete process.env.MAX_OUTPUT_TOKENS;
     delete process.env.REVIEWS_DIR;
+    delete process.env.TEMPERATURE;
+    delete process.env.RATE_LIMIT_WINDOW_MS;
+    delete process.env.RATE_LIMIT_MAX_REQUESTS;
   });
 
   afterEach(() => {

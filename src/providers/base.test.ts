@@ -59,10 +59,10 @@ describe("buildReviewPrompt", () => {
 
     const prompt = buildReviewPrompt(request);
 
-    expect(prompt).toContain("# Task");
+    expect(prompt).toContain("<task>");
     expect(prompt).toContain("Analyze security vulnerabilities");
-    expect(prompt).toContain("## Reference Instructions");
-    expect(prompt).toContain("# Code Context");
+    expect(prompt).toContain("<reference-instructions>");
+    expect(prompt).toContain("<code-context>");
     expect(prompt).toContain("const x = 1;");
   });
 
@@ -74,9 +74,9 @@ describe("buildReviewPrompt", () => {
 
     const prompt = buildReviewPrompt(request);
 
-    expect(prompt).not.toContain("# Task");
+    expect(prompt).not.toContain("<task>");
     expect(prompt).toContain("Review guidelines here");
-    expect(prompt).toContain("# Code Context");
+    expect(prompt).toContain("<code-context>");
   });
 
   it("includes focus areas when provided", () => {
@@ -134,7 +134,7 @@ describe("buildReviewPrompt", () => {
     expect(prompt).toContain("Be concise");
   });
 
-  it("separates sections with markdown separators", () => {
+  it("wraps sections with XML tags", () => {
     const request: ReviewRequest = {
       instructions: "Guidelines",
       context: "Code content here",
@@ -142,8 +142,10 @@ describe("buildReviewPrompt", () => {
 
     const prompt = buildReviewPrompt(request);
 
-    expect(prompt).toContain("---");
-    expect(prompt).toContain("# Code Context");
+    expect(prompt).toContain("<instructions>");
+    expect(prompt).toContain("</instructions>");
+    expect(prompt).toContain("<code-context>");
+    expect(prompt).toContain("</code-context>");
   });
 
   it("includes language hints when provided", () => {
@@ -159,7 +161,7 @@ describe("buildReviewPrompt", () => {
     expect(prompt).toContain("Watch for `any` abuse");
     // Hints should appear before Code Context
     const hintsIndex = prompt.indexOf("TypeScript-Specific");
-    const contextIndex = prompt.indexOf("# Code Context");
+    const contextIndex = prompt.indexOf("<code-context>");
     expect(hintsIndex).toBeLessThan(contextIndex);
   });
 
@@ -175,7 +177,7 @@ describe("buildReviewPrompt", () => {
 
     expect(prompt).toContain("Go-Specific Pitfalls");
     const hintsIndex = prompt.indexOf("Go-Specific");
-    const contextIndex = prompt.indexOf("# Code Context");
+    const contextIndex = prompt.indexOf("<code-context>");
     expect(hintsIndex).toBeLessThan(contextIndex);
   });
 

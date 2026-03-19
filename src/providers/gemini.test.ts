@@ -59,7 +59,7 @@ describe("GeminiProvider", () => {
     expect(callArgs.contents).toBeDefined();
     expect(callArgs.contents[0].role).toBe("user");
     expect(callArgs.contents[0].parts[0].text).toContain("Review guidelines");
-    expect(callArgs.contents[0].parts[0].text).toContain("# Code Context");
+    expect(callArgs.contents[0].parts[0].text).toContain("<code-context>");
   });
 
   it("passes task to prompt when provided", async () => {
@@ -79,7 +79,7 @@ describe("GeminiProvider", () => {
     await provider.review(request);
 
     const callArgs = mockGenerateContent.mock.calls[0][0];
-    expect(callArgs.contents[0].parts[0].text).toContain("# Task");
+    expect(callArgs.contents[0].parts[0].text).toContain("<task>");
     expect(callArgs.contents[0].parts[0].text).toContain("Analyze security vulnerabilities");
   });
 

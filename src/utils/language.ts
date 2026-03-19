@@ -46,6 +46,8 @@ const LANGUAGE_HINTS: Record<string, string[]> = {
 const EXTENSION_TO_LANGUAGE: Record<string, string> = {
   ".ts": "typescript",
   ".tsx": "typescript",
+  ".cts": "typescript",
+  ".mts": "typescript",
   ".js": "javascript",
   ".jsx": "javascript",
   ".mjs": "javascript",
