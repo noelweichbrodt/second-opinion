@@ -105,10 +105,16 @@ export const SecondOpinionInputSchema = z.object({
     .boolean()
     .default(true)
     .describe("Include referenced type definitions"),
-  maxTokens: z
+  maxInputTokens: z
     .number()
     .default(100000)
-    .describe("Maximum tokens for context"),
+    .describe("Maximum tokens for context sent to reviewer"),
+  maxOutputTokens: z
+    .number()
+    .optional()
+    .describe(
+      "Maximum tokens for reviewer's response. Defaults to 32768."
+    ),
 
   // PR options
   prNumber: z
@@ -242,7 +248,7 @@ export async function executeReview(
     includeDependents: input.includeDependents,
     includeTests: input.includeTests,
     includeTypes: input.includeTypes,
-    maxTokens: input.maxTokens,
+    maxTokens: input.maxInputTokens,
     prNumber: input.prNumber,
   });
 
@@ -301,6 +307,9 @@ export async function executeReview(
       effectiveProvider = config.geminiApiKey ? "gemini" : "openai";
     }
   }
+  // 7a. Determine maxOutputTokens (input > config > default)
+  const maxOutputTokens = input.maxOutputTokens ?? config.maxOutputTokens;
+
   const provider = createProvider(effectiveProvider, config);
   const response = await provider.review({
     instructions,
@@ -310,6 +319,7 @@ export async function executeReview(
     customPrompt: input.customPrompt,
     temperature,
     languageHints: languageHints || undefined,
+    maxOutputTokens,
   });
 
   // 9. Derive session name if not provided

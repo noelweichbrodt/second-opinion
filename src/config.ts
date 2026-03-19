@@ -10,6 +10,8 @@ export const ConfigSchema = z.object({
   geminiModel: z.string().default("gemini-3-flash-preview"),
   openaiModel: z.string().default("gpt-5.2"),
   maxContextTokens: z.number().default(200000),
+  /** Maximum output tokens for LLM response generation */
+  maxOutputTokens: z.number().default(32768),
   reviewsDir: z.string().default("second-opinions"),
   /** Default temperature for LLM generation (0-1) */
   temperature: z.number().min(0).max(1).default(0.3),
@@ -53,6 +55,9 @@ export function loadConfig(): Config {
     maxContextTokens: process.env.MAX_CONTEXT_TOKENS
       ? parseInt(process.env.MAX_CONTEXT_TOKENS)
       : fileConfig.maxContextTokens,
+    maxOutputTokens: process.env.MAX_OUTPUT_TOKENS
+      ? parseInt(process.env.MAX_OUTPUT_TOKENS)
+      : fileConfig.maxOutputTokens,
     reviewsDir: process.env.REVIEWS_DIR || fileConfig.reviewsDir,
     temperature: process.env.TEMPERATURE
       ? parseFloat(process.env.TEMPERATURE)

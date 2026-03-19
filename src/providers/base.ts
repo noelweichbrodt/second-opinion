@@ -8,6 +8,8 @@ export interface ReviewRequest {
   temperature?: number;
   /** Language-specific pitfall hints to inject into the prompt (e.g., TypeScript gotchas). */
   languageHints?: string;
+  /** Maximum tokens for the LLM response. */
+  maxOutputTokens?: number;
 }
 
 export interface ReviewResponse {

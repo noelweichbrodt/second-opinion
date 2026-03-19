@@ -23,6 +23,7 @@ export class OpenAIProvider implements ReviewProvider {
 
     // Use provided temperature or default to 0.3 for focused output
     const temperature = request.temperature ?? 0.3;
+    const maxOutputTokens = request.maxOutputTokens ?? 32768;
 
     const response = await this.client.chat.completions.create({
       model: this.model,
@@ -36,7 +37,7 @@ export class OpenAIProvider implements ReviewProvider {
           content: prompt,
         },
       ],
-      max_completion_tokens: 8192,
+      max_completion_tokens: maxOutputTokens,
       temperature,
     });
 

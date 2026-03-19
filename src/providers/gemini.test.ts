@@ -238,7 +238,7 @@ describe("GeminiProvider", () => {
 
     const callArgs = mockGenerateContent.mock.calls[0][0];
     expect(callArgs.generationConfig).toBeDefined();
-    expect(callArgs.generationConfig.maxOutputTokens).toBe(8192);
+    expect(callArgs.generationConfig.maxOutputTokens).toBe(32768); // default
     expect(callArgs.generationConfig.temperature).toBe(0.3);
   });
 

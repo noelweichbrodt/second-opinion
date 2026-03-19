@@ -286,7 +286,7 @@ describe("OpenAIProvider", () => {
     await provider.review(request);
 
     const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.max_completion_tokens).toBe(8192);
+    expect(callArgs.max_completion_tokens).toBe(32768); // default
     expect(callArgs.temperature).toBe(0.3);
   });
 

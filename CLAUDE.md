@@ -43,7 +43,7 @@ When the user invokes the skill:
 
 1. Parse the input:
    - First word may be provider (`gemini`, `openai`, or `consensus`)
-   - Words with `=` are options (e.g., `temp=0.8`, `maxTokens=50000`)
+   - Words with `=` are options (e.g., `temp=0.8`, `maxInputTokens=50000`)
    - Remaining text is the task (if any)
    - If no provider specified, use default (consensus)
 
@@ -128,10 +128,10 @@ to produce a more informed synthesis than either external model could alone.
 
 **With inline options:**
 ```
-User: /second-opinion temp=0.8 maxTokens=50000 Creative review of this design
+User: /second-opinion temp=0.8 maxInputTokens=50000 Creative review of this design
 
 Claude: I'll ask Gemini with higher temperature for more creative feedback.
-[Calls second_opinion tool with temperature: 0.8, maxTokens: 50000]
+[Calls second_opinion tool with temperature: 0.8, maxInputTokens: 50000]
 ```
 
 **With additional files:**
@@ -159,7 +159,8 @@ Claude: I'll include the previous review and ask Gemini to evaluate the changes.
 | includeDependents | No | true | Include importing files |
 | includeTests | No | true | Include test files |
 | includeTypes | No | true | Include type definitions |
-| maxTokens | No | 100000 | Context token budget |
+| maxInputTokens | No | 100000 | Context token budget |
+| maxOutputTokens | No | 32768 | Max tokens for reviewer's response |
 | temperature | No | 0.3 | LLM temperature (0-1). Lower = more focused, higher = more creative |
 | focusAreas | No | - | Areas to focus on (for code reviews) |
 
@@ -169,13 +170,14 @@ Options can be passed inline using `key=value` syntax:
 
 ```
 /second-opinion temp=0.8 Review for edge cases
-/second-opinion consensus maxTokens=50000 Security audit
+/second-opinion consensus maxInputTokens=50000 Security audit
 /second-opinion openai temp=0.5 includeDeps=false Quick review
 ```
 
 **Supported inline options:**
 - `temp` / `temperature` - LLM temperature (0-1)
-- `maxTokens` - Context token budget
+- `maxInputTokens` - Context token budget
+- `maxOutputTokens` - Max tokens for reviewer's response
 - `allowExternalFiles` - Allow files outside project (true/false)
 - `includeFiles` - Comma-separated list of additional files
 - `includeDeps` / `includeDependencies` - Include imported files (true/false)
@@ -297,6 +299,7 @@ claude mcp add second-opinion \
 | OPENAI_MODEL | gpt-4o | OpenAI model to use |
 | DEFAULT_PROVIDER | consensus | Default provider if not specified (falls back to single provider if only one key configured) |
 | MAX_CONTEXT_TOKENS | 100000 | Token budget for context |
+| MAX_OUTPUT_TOKENS | 32768 | Max tokens for reviewer's response |
 | TEMPERATURE | 0.3 | Default LLM temperature (0-1) |
 | RATE_LIMIT_WINDOW_MS | 60000 | Rate limit window in milliseconds |
 | RATE_LIMIT_MAX_REQUESTS | 10 | Max requests per rate limit window |

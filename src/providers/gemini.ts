@@ -28,6 +28,7 @@ export class GeminiProvider implements ReviewProvider {
 
     // Use provided temperature or default to 0.3 for focused output
     const temperature = request.temperature ?? 0.3;
+    const maxOutputTokens = request.maxOutputTokens ?? 32768;
 
     const result = await model.generateContent({
       contents: [
@@ -37,7 +38,7 @@ export class GeminiProvider implements ReviewProvider {
         },
       ],
       generationConfig: {
-        maxOutputTokens: 8192,
+        maxOutputTokens,
         temperature,
       },
     });

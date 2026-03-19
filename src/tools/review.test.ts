@@ -57,7 +57,7 @@ describe("SecondOpinionInputSchema", () => {
     expect(result.includeDependents).toBe(true);
     expect(result.includeTests).toBe(true);
     expect(result.includeTypes).toBe(true);
-    expect(result.maxTokens).toBe(100000);
+    expect(result.maxInputTokens).toBe(100000);
     expect(result.allowExternalFiles).toBe(false);
     expect(result.dryRun).toBe(false);
   });
@@ -130,7 +130,7 @@ describe("SecondOpinionInputSchema", () => {
       includeDependents: false,
       includeTests: false,
       includeTypes: false,
-      maxTokens: 50000,
+      maxInputTokens: 50000,
       sessionName: "custom-name",
       customPrompt: "Be brief",
       focusAreas: ["Errors"],
@@ -142,7 +142,7 @@ describe("SecondOpinionInputSchema", () => {
     expect(result.task).toBe("Review code");
     expect(result.allowExternalFiles).toBe(true);
     expect(result.includeConversation).toBe(false);
-    expect(result.maxTokens).toBe(50000);
+    expect(result.maxInputTokens).toBe(50000);
     expect(result.dryRun).toBe(true);
   });
 });

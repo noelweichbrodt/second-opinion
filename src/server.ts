@@ -95,10 +95,15 @@ The reviewer sees the same context Claude had, plus related code for full unders
                 default: true,
                 description: "Include referenced type definitions",
               },
-              maxTokens: {
+              maxInputTokens: {
                 type: "number",
                 default: 100000,
-                description: "Maximum tokens for context",
+                description: "Maximum tokens for context sent to reviewer",
+              },
+              maxOutputTokens: {
+                type: "number",
+                description:
+                  "Maximum tokens for reviewer's response. Defaults to 32768.",
               },
               prNumber: {
                 type: "number",
