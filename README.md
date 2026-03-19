@@ -52,9 +52,9 @@ Don't just get code reviews—ask for anything:
 Switch between Gemini and GPT, or use both:
 
 ```
-/second-opinion gemini Review this code    # Uses Gemini (default)
-/second-opinion openai Review this code    # Uses GPT
-/second-opinion consensus Review this code # Uses BOTH in parallel
+/second-opinion consensus Review this code # Uses BOTH in parallel (default)
+/second-opinion gemini Review this code    # Uses Gemini only
+/second-opinion openai Review this code    # Uses GPT only
 ```
 
 ### Consensus Mode
@@ -69,7 +69,8 @@ Consensus mode:
 - Calls both providers simultaneously (faster than sequential calls)
 - Returns combined output with each model's perspective
 - Highlights areas of agreement and differences
-- Requires both `GEMINI_API_KEY` and `OPENAI_API_KEY` to be configured
+- **Smart fallback**: if only one API key is configured, automatically uses that single provider instead of failing
+- Requires both `GEMINI_API_KEY` and `OPENAI_API_KEY` for true consensus; works with just one key via fallback
 
 ### Smart Token Budgeting
 
@@ -100,10 +101,10 @@ Reference files outside your session:
 ```
 > /second-opinion
 
-Review complete! Written to second-opinions/add-auth-flow.gemini.review.md
+Consensus review complete! Written to second-opinions/add-auth-flow.consensus.review.md
 - Analyzed 14 files (52,000 tokens)
-- Key findings: Missing input validation in login handler,
-  consider rate limiting for auth endpoints
+- Key findings: [BLOCKING] Missing input validation in login handler,
+  [IMPORTANT] Consider rate limiting for auth endpoints
 ```
 
 ### Security Audit
@@ -258,10 +259,11 @@ claude mcp add second-opinion \
 |----------|---------|-------------|
 | `GEMINI_API_KEY` | — | API key for Google Gemini |
 | `OPENAI_API_KEY` | — | API key for OpenAI |
-| `GEMINI_MODEL` | `gemini-2.0-flash-exp` | Gemini model to use |
-| `OPENAI_MODEL` | `gpt-4o` | OpenAI model to use |
-| `DEFAULT_PROVIDER` | `gemini` | Default provider when not specified |
-| `MAX_CONTEXT_TOKENS` | `100000` | Maximum tokens for context |
+| `GEMINI_MODEL` | `gemini-3-flash-preview` | Gemini model to use |
+| `OPENAI_MODEL` | `gpt-5.2` | OpenAI model to use |
+| `DEFAULT_PROVIDER` | `consensus` | Default provider (`gemini`, `openai`, or `consensus`) |
+| `MAX_CONTEXT_TOKENS` | `200000` | Maximum tokens for context |
+| `MAX_OUTPUT_TOKENS` | `32768` | Maximum tokens for reviewer's response |
 | `TEMPERATURE` | `0.3` | Default LLM temperature (0-1) |
 | `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (1 minute) |
 | `RATE_LIMIT_MAX_REQUESTS` | `10` | Max requests per window |
@@ -275,10 +277,11 @@ Create `~/.config/second-opinion/config.json`:
 {
   "geminiApiKey": "your-key",
   "openaiApiKey": "your-key",
-  "defaultProvider": "gemini",
-  "geminiModel": "gemini-2.0-flash-exp",
-  "openaiModel": "gpt-4o",
-  "maxContextTokens": 100000,
+  "defaultProvider": "consensus",
+  "geminiModel": "gemini-3-flash-preview",
+  "openaiModel": "gpt-5.2",
+  "maxContextTokens": 200000,
+  "maxOutputTokens": 32768,
   "temperature": 0.3,
   "rateLimitWindowMs": 60000,
   "rateLimitMaxRequests": 10,
@@ -311,7 +314,7 @@ When calling the MCP tool directly:
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `provider` | Yes | — | `"gemini"`, `"openai"`, or `"consensus"` |
+| `provider` | Yes | — | `"gemini"`, `"openai"`, or `"consensus"` (falls back to single provider if only one key configured) |
 | `projectPath` | Yes | — | Absolute path to project |
 | `task` | No | — | Custom prompt (defaults to code review) |
 | `sessionId` | No | latest | Claude Code session ID |
@@ -324,7 +327,8 @@ When calling the MCP tool directly:
 | `includeDependents` | No | `true` | Include importing files |
 | `includeTests` | No | `true` | Include test files |
 | `includeTypes` | No | `true` | Include type definitions |
-| `maxTokens` | No | `100000` | Context token budget |
+| `maxInputTokens` | No | `100000` | Context token budget |
+| `maxOutputTokens` | No | `32768` | Max tokens for reviewer's response |
 | `temperature` | No | `0.3` | LLM temperature (0-1) |
 | `focusAreas` | No | — | Specific areas to focus on |
 
@@ -364,11 +368,12 @@ When calling the MCP tool directly:
 │  ## Summary                                                      │
 │  The authentication implementation is solid...                   │
 │                                                                  │
-│  ## Critical Issues                                              │
-│  - Missing rate limiting on login endpoint                       │
+│  ## Findings                                                     │
+│  [BLOCKING] Missing rate limiting on login endpoint              │
+│  [SUGGESTION] Consider adding refresh token rotation             │
 │                                                                  │
-│  ## Suggestions                                                  │
-│  - Consider adding refresh token rotation                        │
+│  ## What's Done Well                                             │
+│  [PRAISE] Clean separation of auth concerns                      │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
