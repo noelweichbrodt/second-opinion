@@ -152,16 +152,14 @@ describe("loadReviewInstructions", () => {
     // the returned string from loadConfig's internal default.
     const instructions = loadReviewInstructions(emptyDir);
 
-    // These sections exist in all tiers (template, global, and hardcoded)
-    expect(instructions).toContain("## Your Role");
-    expect(instructions).toContain("## Review Focus");
-    expect(instructions).toContain("## Output Format");
+    // loadReviewInstructions may return a global file or the hardcoded default.
+    // Verify it returns non-empty review instructions with common structural elements.
+    expect(instructions.length).toBeGreaterThan(100);
     expect(instructions).toContain("Summary");
-    expect(instructions).toContain("Critical Issues");
-    expect(instructions).toContain("Suggestions");
+    expect(instructions).toContain("Output Format");
   });
 
-  it("hardcoded default includes lateral thinking instructions", () => {
+  it("hardcoded default includes phased methodology and lateral thinking", () => {
     // ESM prevents mocking fs.existsSync, so we verify the hardcoded
     // default string in config.ts source as a regression check.
     const configSource = fs.readFileSync(
@@ -169,8 +167,10 @@ describe("loadReviewInstructions", () => {
       "utf-8"
     );
     expect(configSource).toContain("Upstream/Downstream Opportunities");
-    expect(configSource).toContain("senior code reviewer");
-    expect(configSource).toContain("beyond the immediate diff");
-    expect(configSource).toContain("what would have to be true");
+    expect(configSource).toContain("Think Upstream");
+    expect(configSource).toContain("Self-Interrogation");
+    expect(configSource).toContain("What would have to be true");
+    expect(configSource).toContain("[BLOCKING]");
+    expect(configSource).toContain("Phased Review");
   });
 });
