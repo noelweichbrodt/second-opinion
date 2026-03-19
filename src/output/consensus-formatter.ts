@@ -1,5 +1,7 @@
 /**
  * Formats consensus results from multiple providers into a combined markdown document.
+ * Both individual reviews are included in full, with a synthesis placeholder at the top
+ * for Claude to fill in using its full session context.
  */
 
 import { ConsensusResult } from "../providers/consensus.js";
@@ -11,7 +13,8 @@ export interface ConsensusFormatOptions {
 
 /**
  * Format consensus results into a readable markdown document.
- * Shows both perspectives side-by-side with clear section headers.
+ * Includes both reviews in full with a synthesis section placeholder
+ * that Claude Code fills in after reading both reviews.
  */
 export function formatConsensusOutput(
   result: ConsensusResult,
@@ -27,12 +30,26 @@ export function formatConsensusOutput(
   }
   lines.push("");
 
-  // Overview of what was done
-  lines.push("> Both Gemini and OpenAI analyzed your code independently.");
-  lines.push("> Compare their perspectives below to get a well-rounded view.");
+  // Synthesis placeholder — Claude fills this in with full session context
+  lines.push("## Synthesis");
+  lines.push("");
+  lines.push("*To be synthesized by Claude Code with full session context.*");
+  lines.push("");
+  lines.push("After reading both reviews below, this section should cover:");
+  lines.push("");
+  lines.push("- **Agreements**: Issues both reviewers flagged (highest confidence)");
+  lines.push(
+    "- **Unique Insights**: Points only one reviewer caught"
+  );
+  lines.push(
+    "- **Disagreements**: Where they conflict, with assessment of which is correct"
+  );
+  lines.push(
+    "- **Prioritized Action List**: Merged recommendations ordered by impact"
+  );
   lines.push("");
 
-  // Status summary
+  // Status summary (if errors)
   const geminiSuccess = !result.gemini.error;
   const openaiSuccess = !result.openai.error;
 
@@ -40,10 +57,10 @@ export function formatConsensusOutput(
     lines.push("## Status");
     lines.push("");
     lines.push(
-      `- Gemini: ${geminiSuccess ? "✓ Success" : `✗ Error - ${result.gemini.error}`}`
+      `- Gemini: ${geminiSuccess ? "Success" : `Error - ${result.gemini.error}`}`
     );
     lines.push(
-      `- OpenAI: ${openaiSuccess ? "✓ Success" : `✗ Error - ${result.openai.error}`}`
+      `- OpenAI: ${openaiSuccess ? "Success" : `Error - ${result.openai.error}`}`
     );
     lines.push("");
   }
@@ -51,7 +68,7 @@ export function formatConsensusOutput(
   // Gemini section
   lines.push("---");
   lines.push("");
-  lines.push("## Gemini's Perspective");
+  lines.push("## Gemini's Review");
   lines.push("");
   lines.push(`*Model: ${result.gemini.model}*`);
   if (result.gemini.tokensUsed) {
@@ -60,7 +77,7 @@ export function formatConsensusOutput(
   lines.push("");
 
   if (result.gemini.error) {
-    lines.push(`> ⚠️ Gemini encountered an error: ${result.gemini.error}`);
+    lines.push(`> Gemini encountered an error: ${result.gemini.error}`);
   } else {
     lines.push(result.gemini.review);
   }
@@ -69,7 +86,7 @@ export function formatConsensusOutput(
   // OpenAI section
   lines.push("---");
   lines.push("");
-  lines.push("## OpenAI's Perspective");
+  lines.push("## OpenAI's Review");
   lines.push("");
   lines.push(`*Model: ${result.openai.model}*`);
   if (result.openai.tokensUsed) {
@@ -78,22 +95,10 @@ export function formatConsensusOutput(
   lines.push("");
 
   if (result.openai.error) {
-    lines.push(`> ⚠️ OpenAI encountered an error: ${result.openai.error}`);
+    lines.push(`> OpenAI encountered an error: ${result.openai.error}`);
   } else {
     lines.push(result.openai.review);
   }
-  lines.push("");
-
-  // Footer guidance
-  lines.push("---");
-  lines.push("");
-  lines.push("## Reading This Review");
-  lines.push("");
-  lines.push("Consider the following when comparing perspectives:");
-  lines.push("");
-  lines.push("- **Agreement**: Issues flagged by both models are likely important");
-  lines.push("- **Differences**: Unique insights from one model may reveal blind spots");
-  lines.push("- **Conflicting advice**: Use your judgment based on project context");
   lines.push("");
 
   return lines.join("\n");

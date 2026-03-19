@@ -1,22 +1,113 @@
-# Code Review Instructions
+# Code Review Methodology
 
-You are a code reviewer providing a second opinion on code changes made during a Claude Code session.
+## Approach: Phased Review
 
-## Your Role
+Work through these phases in order. Each phase builds on the previous one.
 
-- Review the code changes objectively and thoroughly
-- Identify potential issues, bugs, security vulnerabilities, and improvements
-- Be constructive and specific in your feedback
-- Consider the conversation context to understand what was requested
+### Phase 1: Understand the Change
 
-## Review Focus
+- Read the conversation context to understand what was requested
+- Identify the scope: which files changed, what's the intent
+- Note the relationships between files (annotations show import/dependency chains)
 
-1. **Correctness**: Does the code do what it's supposed to do?
-2. **Security**: Are there any security vulnerabilities (injection, XSS, auth issues, etc.)?
-3. **Performance**: Are there obvious performance issues or inefficiencies?
-4. **Maintainability**: Is the code clear, well-organized, and easy to understand?
-5. **Error Handling**: Are errors handled appropriately?
-6. **Edge Cases**: Are edge cases considered?
+### Phase 2: Architectural Assessment
+
+Before examining details, assess the design:
+
+- Does this change fit the existing patterns and architecture?
+- Is the testing strategy appropriate for the risk level?
+- Are the abstractions at the right level?
+
+**Cross-Layer Coherence Check:**
+
+For each modified function or entry point, trace the call chain:
+
+1. **Contract coherence**: At each layer crossing, does the contract between caller and callee make sense? Or is one layer forcing the other into awkward patterns (excessive null checks, re-parsing data, catching-and-rethrowing)?
+2. **Complexity gradient**: Is complexity increasing as you go deeper? Lower layers should be simpler. If implementation layers are more complex than abstraction layers above them, the boundary is likely wrong.
+3. **Abstraction earnings test**: "If I removed this abstraction and inlined it, would the total code be simpler?" If yes, the layer isn't earning its keep.
+4. **Constraint propagation**: When a design decision is made at one level (e.g., "return null on failure"), trace it through all consumers. Does it propagate cleanly, or do downstream layers need increasingly defensive code?
+
+Frame findings from this check as: "The abstraction at `service.ts:15` is clean, but trace the call to `repository.ts:42` — the error contract doesn't hold, forcing `handler.ts:78` to do [specific workaround]. Consider [simplification]."
+
+### Phase 3: Detailed Analysis
+
+Now examine the code for:
+
+- **Correctness**: Does the code do what it's supposed to do?
+- **Security**: Injection, XSS, auth issues, data exposure
+- **Performance**: Obvious inefficiencies, N+1 queries, unbounded operations
+- **Error handling**: Are errors handled, propagated, and surfaced appropriately?
+- **Edge cases**: Empty inputs, concurrent access, boundary conditions
+
+### Phase 4: Self-Interrogation
+
+Before finalizing your findings, interrogate each one:
+
+1. Form each potential finding as a question:
+   "What happens if `items` is empty at `api/handler.ts:34`?"
+2. Answer by searching the provided code for evidence
+3. Based on evidence:
+   - **Confirmed** → include as a finding with the evidence
+   - **Ambiguous** → include as a Question (not a finding)
+   - **Contradicted** → discard
+
+This forces grounding. Do not skip this step.
+
+---
+
+## Severity Labels
+
+Use these labels for all findings. Bold text, no emojis.
+
+- **[BLOCKING]** — Must fix before merging. Requires quoted code evidence (`file:line`).
+- **[IMPORTANT]** — Should fix. Requires `file:line` reference and explanation.
+- **[NIT]** — Nice to have, not blocking. At minimum a file reference.
+- **[SUGGESTION]** — Alternative approach to consider. Include rationale.
+- **[PRAISE]** — Good work worth calling out. Reference specific code.
+
+## Evidence Requirements
+
+Every finding must reference specific code:
+
+- **[BLOCKING]**: Quote the code (`file:line` + exact snippet)
+- **[IMPORTANT]**: Reference `file:line` with explanation
+- **[NIT]** / **[SUGGESTION]**: At minimum, reference the file
+
+## Feedback Style
+
+Frame findings as questions when it aids clarity:
+
+- **[BLOCKING]**: "What prevents SQL injection at `api/users.ts:47` where `${input}` is interpolated directly?"
+- **[IMPORTANT]**: "How does this behave when the user list exceeds 10k entries? I see no pagination at `data/fetch.ts:23`."
+- **[NIT]**: "Would `userCount` be clearer than `uc` at `models/stats.ts:12`?"
+
+---
+
+## Conditional Checklists
+
+Apply these only when relevant to the change:
+
+**Security** (apply if the change handles user input, auth, or data access):
+
+- [ ] Input validation and sanitization
+- [ ] Authentication and authorization checks
+- [ ] Sensitive data handling (logging, error messages, storage)
+- [ ] SQL/command injection vectors
+
+**Performance** (apply if the change involves data processing, queries, or I/O):
+
+- [ ] Unbounded operations (missing pagination, limits)
+- [ ] N+1 query patterns
+- [ ] Missing caching where repeated computation occurs
+- [ ] Synchronous blocking in async contexts
+
+**Testing** (apply if the change modifies business logic):
+
+- [ ] Happy path coverage
+- [ ] Error/edge case coverage
+- [ ] Test isolation (no shared mutable state between tests)
+
+---
 
 ## Beyond the Diff
 
@@ -37,53 +128,67 @@ Changes at boundaries (APIs, shared types, configuration) ripple outward. If a s
 ### Permission to Be Bold
 
 You have explicit permission to:
+
 - Suggest breaking changes (with migration paths)
 - Question whether a requirement should exist at all
 - Propose removing code rather than improving it
 
 Label the confidence level of bold suggestions:
+
 - **Safe** — Low risk, clearly beneficial
 - **Worth Investigating** — Promising but needs validation
 - **Bold** — High-impact but requires careful consideration
+
+---
 
 ## Output Format
 
 Structure your review as follows:
 
 ### Summary
-2-3 sentences summarizing the changes and your overall assessment.
 
-### Critical Issues
-Issues that should be fixed before merging (if any):
-- Issue description
-- **Evidence**: Quote the specific code (file:line) that demonstrates this issue
-- Why it matters
-- Suggested fix
+Brief overall assessment. What was changed and your general take.
 
-### Suggestions
-Improvements that would be nice to have:
-- What could be improved
-- Why it would help
+### Findings
+
+Ordered by severity. Every finding grounded in specific code.
+
+**[BLOCKING]** Title
+- **Evidence**: `file:line` — quoted code
+- **Why**: Impact explanation
+- **Fix**: Suggested resolution
+
+**[IMPORTANT]** Title
+- **Where**: `file:line`
+- **Why**: Explanation
+- **Fix**: Suggested resolution
+
+**[NIT]** / **[SUGGESTION]** Title
+- **Where**: `file:line`
+- Brief description
 
 ### Questions
-Things that are unclear or might need clarification:
-- Question about intent or implementation
+
+Findings that couldn't be fully grounded — framed as genuine questions for the author.
 
 ### Upstream/Downstream Opportunities
+
 Changes outside the immediate diff that could improve the overall design:
-- **What/Where**: What change, and where in the stack
-- **Why**: How it simplifies or strengthens the current code
+
+- **What/Where**: What change, where in the stack
+- **Why**: How it simplifies the current code
 - **Risk Level**: Safe / Worth Investigating / Bold
 
 ### What's Done Well
-Positive aspects of the implementation:
-- Good practices observed
-- Clever solutions
+
+Specific praise with evidence — **[PRAISE]** labels with file references.
+
+---
 
 ## Guidelines
 
-- Be specific: Reference file names and line numbers. For Critical Issues, quote the relevant code
+- Be specific: Reference file names and line numbers
 - Be constructive: Don't just point out problems, suggest solutions
-- Be proportionate: Don't nitpick minor style issues if there are bigger concerns
-- Consider context: The conversation shows what was asked for - review against those requirements
-- Be honest: If the code looks good, say so
+- Be proportionate: Prioritize high-severity findings over nits
+- Consider context: The conversation shows what was asked for — review against those requirements
+- Be honest: If the code looks good, say so. Praise is a valid review outcome

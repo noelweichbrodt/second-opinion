@@ -6,10 +6,12 @@ import * as os from "os";
 export const ConfigSchema = z.object({
   geminiApiKey: z.string().optional(),
   openaiApiKey: z.string().optional(),
-  defaultProvider: z.enum(["gemini", "openai"]).default("gemini"),
+  defaultProvider: z.enum(["gemini", "openai", "consensus"]).default("consensus"),
   geminiModel: z.string().default("gemini-3-flash-preview"),
   openaiModel: z.string().default("gpt-5.2"),
   maxContextTokens: z.number().default(200000),
+  /** Maximum output tokens for LLM response generation */
+  maxOutputTokens: z.number().default(32768),
   reviewsDir: z.string().default("second-opinions"),
   /** Default temperature for LLM generation (0-1) */
   temperature: z.number().min(0).max(1).default(0.3),
@@ -53,6 +55,9 @@ export function loadConfig(): Config {
     maxContextTokens: process.env.MAX_CONTEXT_TOKENS
       ? parseInt(process.env.MAX_CONTEXT_TOKENS)
       : fileConfig.maxContextTokens,
+    maxOutputTokens: process.env.MAX_OUTPUT_TOKENS
+      ? parseInt(process.env.MAX_OUTPUT_TOKENS)
+      : fileConfig.maxOutputTokens,
     reviewsDir: process.env.REVIEWS_DIR || fileConfig.reviewsDir,
     temperature: process.env.TEMPERATURE
       ? parseFloat(process.env.TEMPERATURE)
@@ -85,32 +90,57 @@ export function loadReviewInstructions(projectPath?: string): string {
     return fs.readFileSync(globalInstructions, "utf-8");
   }
 
-  // Default instructions
-  return `# Code Review Instructions
+  // Default instructions — mirrors templates/second-opinion.md
+  return `# Code Review Methodology
 
-You are a senior code reviewer providing a second opinion on code changes. Look beyond the immediate diff.
+## Approach: Phased Review
 
-## Your Role
-- Review the code changes objectively
-- Identify potential issues, bugs, or improvements
-- Be constructive and specific in your feedback
-- Consider security, performance, and maintainability
-- Ask "what would have to be true for this problem not to exist?" — flag when complexity is a symptom of an upstream design choice
+Work through these phases in order:
 
-## Review Focus
-- Security vulnerabilities and best practices
-- Performance considerations
-- Code clarity and maintainability
-- Error handling and edge cases
-- Testing coverage
-- Upstream/downstream design opportunities: would a different API contract, tighter type, or removed abstraction simplify this code?
+### Phase 1: Understand the Change
+- Read the conversation context to understand what was requested
+- Identify the scope: which files changed, what's the intent
+
+### Phase 2: Architectural Assessment
+- Does this change fit existing patterns?
+- Are abstractions at the right level?
+- Trace call chains: do contracts hold across layer boundaries?
+
+### Phase 3: Detailed Analysis
+- Correctness, security, performance, error handling, edge cases
+
+### Phase 4: Self-Interrogation
+For each finding: form it as a question, search the code for evidence, then:
+- Confirmed → include as a finding with evidence
+- Ambiguous → list under Questions
+- Contradicted → discard
+
+## Severity Labels
+- **[BLOCKING]** — Must fix. Quote the code (\`file:line\` + snippet).
+- **[IMPORTANT]** — Should fix. Reference \`file:line\`.
+- **[NIT]** — Nice to have. At minimum a file reference.
+- **[SUGGESTION]** — Alternative approach. Include rationale.
+- **[PRAISE]** — Good work. Reference specific code.
+
+## Beyond the Diff
+- **Think Upstream**: "What would have to be true for this problem not to exist?"
+- **Think Downstream**: "What assumptions does this change bake in, and who inherits them?"
+- You have permission to suggest breaking changes, question requirements, or propose removing code. Label confidence: Safe / Worth Investigating / Bold.
 
 ## Output Format
-Structure your review with:
-1. **Summary** (2-3 sentences overview)
-2. **Critical Issues** (if any - things that must be fixed)
-3. **Suggestions** (improvements that would be nice)
-4. **Upstream/Downstream Opportunities** (changes outside the diff that could improve the design — label each Safe / Worth Investigating / Bold)
-5. **What's Done Well** (positive feedback)
+### Summary
+Brief overall assessment.
+
+### Findings
+Ordered by severity, every finding grounded in specific code.
+
+### Questions
+Findings that couldn't be fully grounded.
+
+### Upstream/Downstream Opportunities
+- **What/Where** · **Why** · **Risk Level**: Safe / Worth Investigating / Bold
+
+### What's Done Well
+**[PRAISE]** labels with file references.
 `;
 }

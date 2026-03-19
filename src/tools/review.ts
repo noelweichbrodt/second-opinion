@@ -19,6 +19,10 @@ import {
 } from "../output/writer.js";
 import { getRateLimiter, resetRateLimiter } from "../security/rate-limiter.js";
 import { redactSecrets } from "../security/redactor.js";
+import {
+  detectDominantLanguage,
+  getLanguageHints,
+} from "../utils/language.js";
 
 /**
  * Validate that a project path is safe to use
@@ -101,10 +105,16 @@ export const SecondOpinionInputSchema = z.object({
     .boolean()
     .default(true)
     .describe("Include referenced type definitions"),
-  maxTokens: z
+  maxInputTokens: z
     .number()
     .default(100000)
-    .describe("Maximum tokens for context"),
+    .describe("Maximum tokens for context sent to reviewer"),
+  maxOutputTokens: z
+    .number()
+    .optional()
+    .describe(
+      "Maximum tokens for reviewer's response. Defaults to 32768."
+    ),
 
   // PR options
   prNumber: z
@@ -238,19 +248,30 @@ export async function executeReview(
     includeDependents: input.includeDependents,
     includeTests: input.includeTests,
     includeTypes: input.includeTypes,
-    maxTokens: input.maxTokens,
+    maxTokens: input.maxInputTokens,
     prNumber: input.prNumber,
   });
 
+  // Resolve provider early for dry run — consensus falls back to single provider
+  let effectiveProvider = input.provider as ProviderName;
+  if (effectiveProvider === "consensus") {
+    if (!config.geminiApiKey && !config.openaiApiKey) {
+      throw new Error("At least one API key (GEMINI_API_KEY or OPENAI_API_KEY) is required");
+    }
+    if (!config.geminiApiKey || !config.openaiApiKey) {
+      effectiveProvider = config.geminiApiKey ? "gemini" : "openai";
+    }
+  }
+
   // Build egress summary (used for both dry run and actual execution)
-  const summary = buildEgressSummary(bundle, input.projectPath, input.provider);
+  const summary = buildEgressSummary(bundle, input.projectPath, effectiveProvider);
 
   // 2. If dry run, return preview without calling external API
   if (input.dryRun) {
     const hasWarnings = bundle.budgetWarnings.length > 0;
     return {
       dryRun: true,
-      provider: input.provider,
+      provider: effectiveProvider,
       summary,
       totalTokens: bundle.totalTokens,
       budgetWarnings: bundle.budgetWarnings,
@@ -280,8 +301,17 @@ export async function executeReview(
   // 6. Determine temperature (input > config > default)
   const temperature = input.temperature ?? config.temperature;
 
-  // 7. Create provider and execute task
-  const provider = createProvider(input.provider as ProviderName, config);
+  // 6a. Detect dominant language and get hints
+  const dominantLang = detectDominantLanguage(
+    bundle.files.map((f) => f.path)
+  );
+  const languageHints =
+    dominantLang ? getLanguageHints(dominantLang) : undefined;
+
+  // 7. Determine maxOutputTokens (input > config > default)
+  const maxOutputTokens = input.maxOutputTokens ?? config.maxOutputTokens;
+
+  const provider = createProvider(effectiveProvider, config);
   const response = await provider.review({
     instructions,
     context: contextMarkdown,
@@ -289,6 +319,8 @@ export async function executeReview(
     focusAreas: input.focusAreas,
     customPrompt: input.customPrompt,
     temperature,
+    languageHints: languageHints || undefined,
+    maxOutputTokens,
   });
 
   // 9. Derive session name if not provided
@@ -300,7 +332,7 @@ export async function executeReview(
   const timestamp = new Date().toISOString();
   const metadata: ReviewMetadata = {
     sessionName,
-    provider: input.provider,
+    provider: effectiveProvider,
     model: response.model,
     timestamp,
     filesReviewed: bundle.files.map((f) => f.path),
@@ -328,7 +360,7 @@ export async function executeReview(
     review: response.review,
     reviewFile,
     egressManifestFile,
-    provider: input.provider,
+    provider: effectiveProvider,
     model: response.model,
     tokensUsed: response.tokensUsed,
     timestamp,

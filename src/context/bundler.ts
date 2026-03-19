@@ -10,8 +10,9 @@ import {
 import { getAllModifiedFiles, getFileDiff } from "./git.js";
 import { detectPR, formatPRMetadata, PRContext, PRDetectionResult } from "./pr.js";
 import {
-  getDependenciesForFiles,
-  getDependentsForFiles,
+  getDependencies,
+  buildImportIndex,
+  getDependentsFromIndex,
   isWithinProject,
 } from "./imports.js";
 import { findTestFilesForFiles } from "./tests.js";
@@ -242,6 +243,8 @@ export interface FileEntry {
     | "type"
     | "explicit";
   tokenEstimate: number;
+  /** Why this file is included (e.g., "Imported by src/foo.ts"). Rendered in context markdown. */
+  annotation?: string;
 }
 
 export interface OmittedFile {
@@ -521,6 +524,18 @@ export async function bundleContext(
   const modifiedFiles: string[] = [];
 
   if (sessionContext) {
+    // Build annotation map: priority order read < edited < written
+    const sessionAnnotations = new Map<string, string>();
+    for (const filePath of sessionContext.filesRead) {
+      sessionAnnotations.set(filePath, "Read during session");
+    }
+    for (const filePath of sessionContext.filesEdited) {
+      sessionAnnotations.set(filePath, "Edited in session");
+    }
+    for (const filePath of sessionContext.filesWritten) {
+      sessionAnnotations.set(filePath, "Modified in session");
+    }
+
     // Files from session - use content Claude saw if available
     const allSessionFiles = [
       ...sessionContext.filesWritten,
@@ -532,6 +547,7 @@ export async function bundleContext(
       const cachedContent = sessionContext.fileContents.get(filePath);
       const result = readFileEntry(filePath, "session", cachedContent);
       if (result.entry) {
+        result.entry.annotation = sessionAnnotations.get(filePath);
         sessionFiles.push(result.entry);
         accumulateRedactionStats(result);
         if (
@@ -583,6 +599,7 @@ export async function bundleContext(
 
       const result = readFileEntry(filePath, "pr");
       if (result.entry) {
+        result.entry.annotation = `Changed in PR #${prContext.number}`;
         prFiles.push(result.entry);
         accumulateRedactionStats(result);
         modifiedFiles.push(filePath);
@@ -613,6 +630,7 @@ export async function bundleContext(
     if (!addedFiles.has(filePath)) {
       const result = readFileEntry(filePath, "git");
       if (result.entry) {
+        result.entry.annotation = "Uncommitted changes";
         gitFiles.push(result.entry);
         accumulateRedactionStats(result);
         modifiedFiles.push(filePath);
@@ -628,12 +646,26 @@ export async function bundleContext(
   // 4. Dependencies (files imported by modified files)
   const depFiles: FileEntry[] = [];
   if (includeDependencies && modifiedFiles.length > 0) {
-    const deps = getDependenciesForFiles(modifiedFiles, projectPath);
+    // Build map of dep → which modified files import it (for annotations)
+    const depImporterMap = new Map<string, string[]>();
+    for (const modFile of modifiedFiles) {
+      const deps = getDependencies(modFile, projectPath);
+      for (const dep of deps) {
+        if (!modifiedFiles.includes(dep)) {
+          if (!depImporterMap.has(dep)) depImporterMap.set(dep, []);
+          depImporterMap.get(dep)!.push(modFile);
+        }
+      }
+    }
 
-    for (const dep of deps) {
+    for (const [dep, importers] of depImporterMap) {
       if (!addedFiles.has(dep)) {
         const result = readFileEntry(dep, "dependency");
         if (result.entry) {
+          const relImporters = importers.map((f) =>
+            path.relative(projectPath, f)
+          );
+          result.entry.annotation = `Imported by ${relImporters.join(", ")}`;
           depFiles.push(result.entry);
           accumulateRedactionStats(result);
         }
@@ -651,12 +683,24 @@ export async function bundleContext(
   // 5. Dependents (files that import modified files)
   const dependentFiles: FileEntry[] = [];
   if (includeDependents && modifiedFiles.length > 0) {
-    const dependents = await getDependentsForFiles(modifiedFiles, projectPath);
+    // Build import index once, use for both dependent detection and annotations
+    const importIndex = await buildImportIndex(projectPath);
+    const dependents = getDependentsFromIndex(modifiedFiles, importIndex);
 
     for (const dep of dependents) {
       if (!addedFiles.has(dep)) {
         const result = readFileEntry(dep, "dependent");
         if (result.entry) {
+          // Find which modified files this dependent imports
+          const importsModified: string[] = [];
+          for (const modFile of modifiedFiles) {
+            if (importIndex.importedBy.get(modFile)?.has(dep)) {
+              importsModified.push(path.relative(projectPath, modFile));
+            }
+          }
+          if (importsModified.length > 0) {
+            result.entry.annotation = `Imports ${importsModified.join(", ")}`;
+          }
           dependentFiles.push(result.entry);
           accumulateRedactionStats(result);
         }
@@ -826,6 +870,9 @@ export function formatBundleAsMarkdown(
       const ext = path.extname(file.path).slice(1) || "txt";
 
       lines.push(`### ${relativePath}\n`);
+      if (file.annotation) {
+        lines.push(`*${file.annotation}*\n`);
+      }
       lines.push("```" + ext);
       lines.push(file.content);
       lines.push("```\n");

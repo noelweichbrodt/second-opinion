@@ -76,7 +76,7 @@ describe("OpenAIProvider", () => {
 
     const callArgs = mockCreate.mock.calls[0][0];
     expect(callArgs.messages[0].content).toContain("code review");
-    expect(callArgs.messages[0].content).toContain("constructive");
+    expect(callArgs.messages[0].content).toContain("knowledge sharing");
   });
 
   it("includes task-specific system prompt when task provided", async () => {
@@ -112,7 +112,7 @@ describe("OpenAIProvider", () => {
     await provider.review(request);
 
     const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.messages[1].content).toContain("# Task");
+    expect(callArgs.messages[1].content).toContain("<task>");
     expect(callArgs.messages[1].content).toContain("Analyze security vulnerabilities");
   });
 
@@ -286,7 +286,7 @@ describe("OpenAIProvider", () => {
     await provider.review(request);
 
     const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.max_completion_tokens).toBe(8192);
+    expect(callArgs.max_completion_tokens).toBe(32768); // default
     expect(callArgs.temperature).toBe(0.3);
   });
 

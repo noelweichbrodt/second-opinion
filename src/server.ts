@@ -48,16 +48,27 @@ The reviewer sees the same context Claude had, plus related code for full unders
             properties: {
               provider: {
                 type: "string",
-                enum: ["gemini", "openai"],
-                description: "Which LLM to use for the review",
+                enum: ["gemini", "openai", "consensus"],
+                description:
+                  "Which LLM to use. 'consensus' calls both in parallel (falls back to single provider if only one key configured).",
               },
               projectPath: {
                 type: "string",
                 description: "Absolute path to the project being reviewed",
               },
+              task: {
+                type: "string",
+                description:
+                  "Task or prompt for the LLM. When omitted, defaults to code review.",
+              },
               sessionId: {
                 type: "string",
                 description: "Claude Code session ID (defaults to most recent)",
+              },
+              temperature: {
+                type: "number",
+                description:
+                  "Temperature for LLM generation (0-1). Lower = more focused, higher = more creative. Defaults to 0.3.",
               },
               includeConversation: {
                 type: "boolean",
@@ -84,10 +95,15 @@ The reviewer sees the same context Claude had, plus related code for full unders
                 default: true,
                 description: "Include referenced type definitions",
               },
-              maxTokens: {
+              maxInputTokens: {
                 type: "number",
                 default: 100000,
-                description: "Maximum tokens for context",
+                description: "Maximum tokens for context sent to reviewer",
+              },
+              maxOutputTokens: {
+                type: "number",
+                description:
+                  "Maximum tokens for reviewer's response. Defaults to 32768.",
               },
               prNumber: {
                 type: "number",
