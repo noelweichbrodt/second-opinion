@@ -1,6 +1,6 @@
 ---
 name: second-opinion
-description: Get feedback from Gemini or GPT on your current work
+description: Get feedback from Gemini or GPT on your current work (0.4.1)
 user-invocable: true
 ---
 
