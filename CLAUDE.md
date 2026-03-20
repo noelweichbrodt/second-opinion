@@ -67,14 +67,17 @@ When the user invokes the skill:
 
 ### Examples
 
-**Default code review:**
+**Default code review (consensus):**
 ```
 User: /second-opinion
 
-Claude: I'll get a code review from Gemini.
-[Calls second_opinion tool]
-Claude: Review complete! Written to second-opinions/add-user-auth.gemini.review.md
-- Analyzed 12 files
+Claude: I'll get a consensus code review from both Gemini and OpenAI.
+[Calls second_opinion tool with provider: "consensus"]
+[Tool returns both reviews]
+Claude: Both reviews are in. Let me synthesize the findings.
+[Claude reads both reviews and writes synthesis to the output file]
+Claude: Consensus review complete! Written to second-opinions/add-user-auth.consensus.review.md
+- Both models analyzed 12 files
 - Key findings: [brief summary]
 ```
 
@@ -82,9 +85,9 @@ Claude: Review complete! Written to second-opinions/add-user-auth.gemini.review.
 ```
 User: /second-opinion Evaluate the error handling strategy. Are errors handled consistently? Are there gaps?
 
-Claude: I'll ask Gemini to evaluate the error handling strategy.
-[Calls second_opinion tool with task]
-Claude: Analysis complete! Written to second-opinions/add-user-auth.gemini.evaluate-error-handling.md
+Claude: I'll get a consensus evaluation from both Gemini and OpenAI.
+[Calls second_opinion tool with provider: "consensus", task]
+Claude: Analysis complete! Written to second-opinions/add-user-auth.consensus.evaluate-error-handling.md
 ```
 
 **With specific provider:**
@@ -115,14 +118,16 @@ Claude: Consensus review complete! Written to second-opinions/add-user-auth.cons
 **Consensus synthesis — Claude's role:**
 
 In consensus mode, the MCP tool calls both providers and returns both reviews.
-Claude then synthesizes the results using its full session context, covering:
+Claude then synthesizes the results using its full session context into the `## Synthesis` section,
+following the unified review framework:
 
-1. **Agreements**: Issues both reviewers flagged — highest confidence findings
-2. **Unique Insights**: Points only one reviewer caught — may reveal blind spots
-3. **Disagreements**: Where they conflict — Claude assesses which is correct based on codebase knowledge
-4. **Prioritized Action List**: Merged recommendations ordered by impact
+1. **Summary**: Synthesize both reviewers' overall assessments. Note agreement/disagreement.
+2. **Findings**: Merge and deduplicate findings. Use severity labels (`[BLOCKING]`, `[IMPORTANT]`, `[NIT]`, `[SUGGESTION]`, `[PRAISE]`). Note which reviewer(s) flagged each. Higher confidence when both agree. When a diff is provided, only include diff-related issues.
+3. **Pre-existing Issues**: (When a diff was provided) Issues NOT in the diff. Note which reviewer(s) flagged each. Omit if no diff or no pre-existing issues.
+4. **Questions**: Unresolved questions from either review.
+5. **Upstream/Downstream Opportunities**: Merge architectural suggestions.
+6. **What's Done Well**: Merge praise with `[PRAISE]` labels.
 
-Claude writes the synthesis into the `## Synthesis` section of the output file.
 This approach leverages Claude's richer context (full conversation history, codebase understanding)
 to produce a more informed synthesis than either external model could alone.
 
@@ -159,7 +164,7 @@ Claude: I'll include the previous review and ask Gemini to evaluate the changes.
 | includeDependents | No | true | Include importing files |
 | includeTests | No | true | Include test files |
 | includeTypes | No | true | Include type definitions |
-| maxInputTokens | No | 100000 | Context token budget |
+| maxInputTokens | No | 200000 | Context token budget |
 | maxOutputTokens | No | 32768 | Max tokens for reviewer's response |
 | temperature | No | 0.3 | LLM temperature (0-1). Lower = more focused, higher = more creative |
 | focusAreas | No | - | Areas to focus on (for code reviews) |

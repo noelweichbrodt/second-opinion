@@ -30,23 +30,38 @@ export function formatConsensusOutput(
   }
   lines.push("");
 
-  // Synthesis placeholder — Claude fills this in with full session context
+  // Synthesis placeholder — Claude fills this in using the unified review framework
   lines.push("## Synthesis");
   lines.push("");
-  lines.push("*To be synthesized by Claude Code with full session context.*");
+  lines.push("*To be synthesized by Claude Code after reading both reviews.*");
   lines.push("");
-  lines.push("After reading both reviews below, this section should cover:");
+  lines.push("Produce a unified review merging both perspectives:");
   lines.push("");
-  lines.push("- **Agreements**: Issues both reviewers flagged (highest confidence)");
-  lines.push(
-    "- **Unique Insights**: Points only one reviewer caught"
-  );
-  lines.push(
-    "- **Disagreements**: Where they conflict, with assessment of which is correct"
-  );
-  lines.push(
-    "- **Prioritized Action List**: Merged recommendations ordered by impact"
-  );
+  lines.push("### Summary");
+  lines.push("Synthesize both reviewers' overall assessments. Note agreement/disagreement.");
+  lines.push("");
+  lines.push("### Findings");
+  lines.push("Merge and deduplicate findings from both reviews.");
+  lines.push("Use severity labels: **[BLOCKING]**, **[IMPORTANT]**, **[NIT]**, **[SUGGESTION]**, **[PRAISE]**.");
+  lines.push("Every finding MUST include `file:line` references. For [BLOCKING], quote the code.");
+  lines.push("For each finding note which reviewer(s) flagged it (both / Gemini only / OpenAI only).");
+  lines.push("Higher confidence when both agree. When they disagree on severity, assess which is correct.");
+  lines.push("Order by severity. When a diff was provided, only include diff-related issues.");
+  lines.push("");
+  lines.push("### Pre-existing Issues");
+  lines.push("(When a diff was provided) Issues flagged by either/both reviewers NOT in the diff.");
+  lines.push("Same format as Findings — severity labels, `file:line` references, quoted code for [BLOCKING].");
+  lines.push("Note which reviewer(s) flagged each.");
+  lines.push("Omit section if no diff or no pre-existing issues found.");
+  lines.push("");
+  lines.push("### Questions");
+  lines.push("Unresolved questions from either review. Deduplicate, note source.");
+  lines.push("");
+  lines.push("### Upstream/Downstream Opportunities");
+  lines.push("Merge architectural suggestions. Note confidence and source reviewer(s).");
+  lines.push("");
+  lines.push("### What's Done Well");
+  lines.push("Merge praise with **[PRAISE]** labels.");
   lines.push("");
 
   // Status summary (if errors)

@@ -11,6 +11,7 @@ import {
 } from "./base.js";
 import { GeminiProvider } from "./gemini.js";
 import { OpenAIProvider } from "./openai.js";
+import { formatConsensusOutput } from "../output/consensus-formatter.js";
 
 export interface ConsensusResult {
   gemini: ReviewResponse & { error?: string };
@@ -89,8 +90,7 @@ export function isConsensusAvailable(config: Config): boolean {
 
 /**
  * Consensus provider implementation that wraps both providers.
- * Note: This provider's review() method returns only Gemini's response
- * for interface compatibility. Use getConsensusReview() for full results.
+ * Uses formatConsensusOutput for the full unified review framework.
  */
 export class ConsensusProvider implements ReviewProvider {
   name = "consensus";
@@ -103,9 +103,9 @@ export class ConsensusProvider implements ReviewProvider {
   async review(request: ReviewRequest): Promise<ReviewResponse> {
     const result = await getConsensusReview(request, this.config);
 
-    // For interface compatibility, return combined review
-    // The actual consensus formatting happens in the output layer
-    const combinedReview = formatConsensusForProvider(result);
+    const combinedReview = formatConsensusOutput(result, {
+      task: request.task,
+    });
 
     return {
       review: combinedReview,
@@ -114,28 +114,4 @@ export class ConsensusProvider implements ReviewProvider {
         (result.gemini.tokensUsed || 0) + (result.openai.tokensUsed || 0),
     };
   }
-}
-
-/**
- * Simple formatting for provider interface compatibility.
- * Full formatting with headers is done in consensus-formatter.ts
- */
-function formatConsensusForProvider(result: ConsensusResult): string {
-  const parts: string[] = [];
-
-  if (result.gemini.error) {
-    parts.push(`## Gemini Error\n\n${result.gemini.error}\n`);
-  } else {
-    parts.push(`## Gemini's Analysis\n\n${result.gemini.review}\n`);
-  }
-
-  parts.push("---\n");
-
-  if (result.openai.error) {
-    parts.push(`## OpenAI Error\n\n${result.openai.error}\n`);
-  } else {
-    parts.push(`## OpenAI's Analysis\n\n${result.openai.review}\n`);
-  }
-
-  return parts.join("\n");
 }

@@ -159,10 +159,10 @@ describe("buildReviewPrompt", () => {
 
     expect(prompt).toContain("TypeScript-Specific Pitfalls");
     expect(prompt).toContain("Watch for `any` abuse");
-    // Hints should appear before Code Context
+    // Hints should appear after Code Context (content first, instructions second)
     const hintsIndex = prompt.indexOf("TypeScript-Specific");
     const contextIndex = prompt.indexOf("<code-context>");
-    expect(hintsIndex).toBeLessThan(contextIndex);
+    expect(hintsIndex).toBeGreaterThan(contextIndex);
   });
 
   it("includes language hints in task mode", () => {
@@ -176,9 +176,10 @@ describe("buildReviewPrompt", () => {
     const prompt = buildReviewPrompt(request);
 
     expect(prompt).toContain("Go-Specific Pitfalls");
+    // Hints should appear after Code Context (content first, instructions second)
     const hintsIndex = prompt.indexOf("Go-Specific");
     const contextIndex = prompt.indexOf("<code-context>");
-    expect(hintsIndex).toBeLessThan(contextIndex);
+    expect(hintsIndex).toBeGreaterThan(contextIndex);
   });
 
   it("omits language hints section when not provided", () => {

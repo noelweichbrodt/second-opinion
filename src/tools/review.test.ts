@@ -57,7 +57,7 @@ describe("SecondOpinionInputSchema", () => {
     expect(result.includeDependents).toBe(true);
     expect(result.includeTests).toBe(true);
     expect(result.includeTypes).toBe(true);
-    expect(result.maxInputTokens).toBe(100000);
+    expect(result.maxInputTokens).toBe(200000);
     expect(result.allowExternalFiles).toBe(false);
     expect(result.dryRun).toBe(false);
   });

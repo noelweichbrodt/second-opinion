@@ -21,14 +21,59 @@ Then in Claude Code:
 
 That's it. The review appears in `second-opinions/`.
 
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Claude Code                               │
+│                                                                  │
+│  You: "Add user authentication"                                  │
+│  Claude: [reads files, writes code, runs tests]                  │
+│  You: "/second-opinion"                                          │
+│                                                                  │
+└─────────────────────┬───────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Second Opinion MCP                            │
+│                                                                  │
+│  1. Parse Claude Code session logs                               │
+│  2. Collect files read/written + their content                   │
+│  3. Resolve dependencies and dependents                          │
+│  4. Find related tests and types                                 │
+│  5. Collect branch diff (feature branch vs base)                 │
+│  6. Bundle within token budget                                   │
+│  7. Send to Gemini + GPT (consensus mode)                        │
+│  8. Write response to second-opinions/                           │
+│                                                                  │
+└─────────────────────┬───────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│          second-opinions/add-auth.consensus.review.md            │
+│                                                                  │
+│  # Consensus Code Review                                         │
+│                                                                  │
+│  ## Synthesis                                                    │
+│  [Claude merges both perspectives with full context]             │
+│                                                                  │
+│  ## Gemini's Review                                              │
+│  [BLOCKING] Missing rate limiting on login endpoint              │
+│                                                                  │
+│  ## OpenAI's Review                                              │
+│  [SUGGESTION] Consider adding refresh token rotation             │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## Features
 
 ### Automatic Context Collection
 
-Second Opinion reads your Claude Code session to understand what you're working on:
+Your session is the context. Second Opinion reads it automatically:
 
 - **Session files** — Files you read, edited, or created
-- **Conversation** — What you asked Claude to do (code blocks stripped to avoid stale references)
+- **Conversation** — What you asked Claude to do
 - **Dependencies** — Files imported by your modified code
 - **Dependents** — Files that import your modified code
 - **Tests** — Test files related to your changes
@@ -47,44 +92,31 @@ Don't just get code reviews—ask for anything:
 /second-opinion openai Identify potential performance bottlenecks
 ```
 
-### Multiple Providers
+### Consensus & Providers
 
-Switch between Gemini and GPT, or use both:
-
-```
-/second-opinion consensus Review this code # Uses BOTH in parallel (default)
-/second-opinion gemini Review this code    # Uses Gemini only
-/second-opinion openai Review this code    # Uses GPT only
-```
-
-### Consensus Mode
-
-Get perspectives from both Gemini and OpenAI in a single request:
+By default, Second Opinion calls both Gemini and OpenAI in parallel. Claude then synthesizes the findings using its full session context—merging agreements, surfacing unique insights, and resolving disagreements.
 
 ```
-/second-opinion consensus
+/second-opinion                        # Consensus (default) — both providers
+/second-opinion gemini Review this     # Gemini only
+/second-opinion openai Review this     # GPT only
 ```
 
 Consensus mode:
-- Calls both providers simultaneously (faster than sequential calls)
-- Returns combined output with each model's perspective
-- Highlights areas of agreement and differences
-- **Smart fallback**: if only one API key is configured, automatically uses that single provider instead of failing
-- Requires both `GEMINI_API_KEY` and `OPENAI_API_KEY` for true consensus; works with just one key via fallback
+- Calls both providers simultaneously
+- Claude synthesizes findings using the unified review framework
+- **Smart fallback**: if only one API key is configured, uses that single provider
+
+### Diff-Scoped Reviews
+
+On feature branches, Second Opinion automatically includes the git diff (branch vs base). Reviewers distinguish issues introduced by your changes from pre-existing issues in the codebase:
+
+- **Findings** — Issues in the diff (your changes)
+- **Pre-existing Issues** — Legitimate issues NOT introduced by this change (lower priority)
 
 ### Smart Token Budgeting
 
-Context is prioritized to fit within token limits:
-
-1. Explicitly included files (highest priority)
-2. Session files (what you worked on)
-3. Git changes
-4. Dependencies
-5. Dependents
-6. Tests
-7. Type definitions
-
-Files that don't fit are listed in the output so you know what was omitted.
+Context is prioritized by category: explicitly included files first, then session files, git changes, dependencies, dependents, tests, and type definitions. Unused budget spills over to later categories. Files that don't fit are listed so you know what was omitted.
 
 ### Include Additional Files
 
@@ -130,21 +162,9 @@ Analysis complete! Written to second-opinions/add-auth-flow.openai.security-audi
   Include request/response examples.
 ```
 
-### Compare Perspectives
+### Single Provider
 
-Get reviews from both providers at once:
-
-```
-> /second-opinion consensus Review this implementation
-
-Consensus review complete! Written to second-opinions/auth-flow.consensus.review.md
-- Both models analyzed 14 files
-- Agreement: Both flagged the missing null check on line 42
-- Gemini highlighted: Performance concern with nested loops
-- OpenAI highlighted: Inconsistent error message formats
-```
-
-Or separately:
+When you want one model's perspective:
 
 ```
 > /second-opinion gemini Review this implementation
@@ -327,56 +347,10 @@ When calling the MCP tool directly:
 | `includeDependents` | No | `true` | Include importing files |
 | `includeTests` | No | `true` | Include test files |
 | `includeTypes` | No | `true` | Include type definitions |
-| `maxInputTokens` | No | `100000` | Context token budget |
+| `maxInputTokens` | No | `200000` | Context token budget |
 | `maxOutputTokens` | No | `32768` | Max tokens for reviewer's response |
 | `temperature` | No | `0.3` | LLM temperature (0-1) |
 | `focusAreas` | No | — | Specific areas to focus on |
-
-## How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Claude Code                               │
-│                                                                  │
-│  You: "Add user authentication"                                  │
-│  Claude: [reads files, writes code, runs tests]                  │
-│  You: "/second-opinion"                                          │
-│                                                                  │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Second Opinion MCP                            │
-│                                                                  │
-│  1. Parse Claude Code session logs                               │
-│  2. Collect files read/written + their content                   │
-│  3. Resolve dependencies and dependents                          │
-│  4. Find related tests and types                                 │
-│  5. Bundle within token budget                                   │
-│  6. Send to Gemini/GPT                                           │
-│  7. Write response to second-opinions/                           │
-│                                                                  │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              second-opinions/add-auth.gemini.review.md           │
-│                                                                  │
-│  # Code Review - add-auth                                        │
-│  **Provider:** gemini                                            │
-│                                                                  │
-│  ## Summary                                                      │
-│  The authentication implementation is solid...                   │
-│                                                                  │
-│  ## Findings                                                     │
-│  [BLOCKING] Missing rate limiting on login endpoint              │
-│  [SUGGESTION] Consider adding refresh token rotation             │
-│                                                                  │
-│  ## What's Done Well                                             │
-│  [PRAISE] Clean separation of auth concerns                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
 
 ## Requirements
 

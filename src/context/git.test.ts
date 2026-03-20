@@ -7,6 +7,9 @@ import {
   getGitChanges,
   getFileDiff,
   getAllModifiedFiles,
+  getCurrentBranch,
+  getDefaultBranch,
+  getBranchDiff,
 } from "./git.js";
 import {
   createTempDir,
@@ -275,5 +278,138 @@ describe("getAllModifiedFiles", () => {
     const files = getAllModifiedFiles(nonGitDir);
 
     expect(files).toEqual([]);
+  });
+});
+
+describe("getCurrentBranch", () => {
+  let tmpDir: string;
+  let projectDir: string;
+
+  beforeAll(() => {
+    tmpDir = createTempDir("git-current-branch");
+    projectDir = path.join(tmpDir, "project");
+
+    createProjectStructure(projectDir, {
+      "src/index.ts": "export const main = 1;",
+    });
+
+    initGitRepo(projectDir);
+    gitCommit(projectDir, "Initial commit");
+  });
+
+  afterAll(() => {
+    cleanupTempDir(tmpDir);
+  });
+
+  it("returns the current branch name", () => {
+    const branch = getCurrentBranch(projectDir);
+    // Default branch after git init is typically main or master
+    expect(branch).toBeTruthy();
+    expect(typeof branch).toBe("string");
+  });
+
+  it("returns null for non-git directory", () => {
+    const nonGitDir = path.join(tmpDir, "non-git");
+    fs.mkdirSync(nonGitDir, { recursive: true });
+
+    expect(getCurrentBranch(nonGitDir)).toBeNull();
+  });
+});
+
+describe("getDefaultBranch", () => {
+  let tmpDir: string;
+  let projectDir: string;
+
+  beforeAll(() => {
+    tmpDir = createTempDir("git-default-branch");
+    projectDir = path.join(tmpDir, "project");
+
+    createProjectStructure(projectDir, {
+      "src/index.ts": "export const main = 1;",
+    });
+
+    initGitRepo(projectDir);
+    // Create initial commit on main branch — uses static command, safe in tests
+    execSync("git checkout -b main", { cwd: projectDir, stdio: "pipe" });
+    gitCommit(projectDir, "Initial commit");
+  });
+
+  afterAll(() => {
+    cleanupTempDir(tmpDir);
+  });
+
+  it("returns 'main' when main branch exists", () => {
+    expect(getDefaultBranch(projectDir)).toBe("main");
+  });
+
+  it("returns null for non-git directory", () => {
+    const nonGitDir = path.join(tmpDir, "non-git");
+    fs.mkdirSync(nonGitDir, { recursive: true });
+
+    expect(getDefaultBranch(nonGitDir)).toBeNull();
+  });
+});
+
+describe("getBranchDiff", () => {
+  let tmpDir: string;
+  let projectDir: string;
+
+  beforeAll(() => {
+    tmpDir = createTempDir("git-branch-diff");
+    projectDir = path.join(tmpDir, "project");
+
+    createProjectStructure(projectDir, {
+      "src/index.ts": "export const main = 1;",
+      "src/utils.ts": "export const util = 1;",
+    });
+
+    initGitRepo(projectDir);
+    // Static git commands for test setup — no user input, safe
+    execSync("git checkout -b main", { cwd: projectDir, stdio: "pipe" });
+    gitCommit(projectDir, "Initial commit");
+
+    // Create a feature branch and make changes
+    execSync("git checkout -b feature-branch", { cwd: projectDir, stdio: "pipe" });
+    fs.writeFileSync(
+      path.join(projectDir, "src/index.ts"),
+      "export const main = 2;\nexport const added = true;"
+    );
+    gitCommit(projectDir, "Feature changes");
+  });
+
+  afterAll(() => {
+    cleanupTempDir(tmpDir);
+  });
+
+  it("returns diff when on a feature branch", () => {
+    const diff = getBranchDiff(projectDir);
+
+    expect(diff).not.toBeNull();
+    expect(diff).toContain("-export const main = 1;");
+    expect(diff).toContain("+export const main = 2;");
+    expect(diff).toContain("+export const added = true;");
+  });
+
+  it("returns diff with explicit baseBranch", () => {
+    const diff = getBranchDiff(projectDir, "main");
+
+    expect(diff).not.toBeNull();
+    expect(diff).toContain("-export const main = 1;");
+  });
+
+  it("returns null when on the default branch", () => {
+    // Static git commands for test setup — no user input, safe
+    execSync("git checkout main", { cwd: projectDir, stdio: "pipe" });
+    const diff = getBranchDiff(projectDir);
+    expect(diff).toBeNull();
+    // Switch back
+    execSync("git checkout feature-branch", { cwd: projectDir, stdio: "pipe" });
+  });
+
+  it("returns null for non-git directory", () => {
+    const nonGitDir = path.join(tmpDir, "non-git");
+    fs.mkdirSync(nonGitDir, { recursive: true });
+
+    expect(getBranchDiff(nonGitDir)).toBeNull();
   });
 });

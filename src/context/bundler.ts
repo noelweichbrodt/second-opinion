@@ -7,7 +7,7 @@ import {
   formatConversationContext,
   SessionContext,
 } from "./session.js";
-import { getAllModifiedFiles, getFileDiff } from "./git.js";
+import { getAllModifiedFiles, getFileDiff, getBranchDiff } from "./git.js";
 import { detectPR, formatPRMetadata, PRContext, PRDetectionResult } from "./pr.js";
 import {
   getDependencies,
@@ -23,6 +23,40 @@ import {
   BudgetCategory,
 } from "../utils/tokens.js";
 import { redactSecrets } from "../security/redactor.js";
+
+/**
+ * Split a unified diff into per-file sections.
+ * Each section starts with "diff --git a/... b/..." and includes all hunks for that file.
+ */
+function splitDiffByFile(diff: string): Array<{ file: string; content: string }> {
+  const sections: Array<{ file: string; content: string }> = [];
+  const lines = diff.split("\n");
+  let currentFile = "";
+  let currentLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      // Flush previous section
+      if (currentFile && currentLines.length > 0) {
+        sections.push({ file: currentFile, content: currentLines.join("\n") });
+      }
+      // Extract filename from "diff --git a/path b/path"
+      // Git quotes paths with spaces: diff --git "a/path with spaces" "b/path with spaces"
+      const match = line.match(/^diff --git "?a\/(.+?)"? "?b\//)
+        || line.match(/^diff --git a\/(.+) b\//);
+      currentFile = match ? match[1] : "unknown";
+      currentLines = [line];
+    } else {
+      currentLines.push(line);
+    }
+  }
+  // Flush last section
+  if (currentFile && currentLines.length > 0) {
+    sections.push({ file: currentFile, content: currentLines.join("\n") });
+  }
+
+  return sections;
+}
 
 /**
  * Expand tilde in paths to home directory
@@ -273,6 +307,8 @@ export interface ContextBundle {
   prContext?: string;
   /** Raw PR metadata for structured access (egress summary, etc.) */
   prMetadata?: { number: number; url: string; commentsCount: number; reviewsCount: number };
+  /** Unified diff of branch changes (from base branch), kept separate from file markdown */
+  branchDiff?: string;
   files: FileEntry[];
   omittedFiles: OmittedFile[];
   totalTokens: number;
@@ -468,10 +504,10 @@ export async function bundleContext(
   };
 
   /**
-   * Get budget for a category including spillover from previous categories.
-   * Updates spilloverBudget based on actual usage.
+   * After processing a category, update spilloverBudget:
+   * unused base budget flows into the spillover pool for later categories.
    */
-  const getBudgetWithSpillover = (
+  const updateSpillover = (
     category: BudgetCategory,
     usedTokens: number
   ): void => {
@@ -517,7 +553,7 @@ export async function bundleContext(
   const explicitUsed = addFilesWithBudget(explicitFiles, "explicit", explicitBudget, {
     skipBoundsCheck: true,
   });
-  getBudgetWithSpillover("explicit", explicitUsed);
+  updateSpillover("explicit", explicitUsed);
 
   // 2. Collect session files (files Claude read/edited/wrote)
   const sessionFiles: FileEntry[] = [];
@@ -563,7 +599,7 @@ export async function bundleContext(
   // Process session files with spillover
   const sessionBudget = baseBudgets.session + Math.floor(spilloverBudget * 0.5);
   const sessionUsed = addFilesWithBudget(sessionFiles, "session", sessionBudget);
-  getBudgetWithSpillover("session", sessionUsed);
+  updateSpillover("session", sessionUsed);
 
   // 2b. PR context (auto-detected or explicit prNumber)
   const prDetection = detectPR(projectPath, prNumber);
@@ -612,14 +648,75 @@ export async function bundleContext(
     // Process PR files with spillover
     const prBudget = baseBudgets.pr + Math.floor(spilloverBudget * 0.5);
     const prUsed = addFilesWithBudget(prFiles, "pr", prBudget);
-    getBudgetWithSpillover("pr", prUsed);
+    updateSpillover("pr", prUsed);
   } else {
     // Surface failure reason (except no_pr_found which is normal)
     if (prDetection.reason !== "no_pr_found") {
       bundle.prDetectionFailure = { reason: prDetection.reason, message: prDetection.message };
     }
     // No PR — spillover the full pr budget to later categories
-    getBudgetWithSpillover("pr", 0);
+    updateSpillover("pr", 0);
+  }
+
+  // 2c. Collect branch diff (feature branch vs base)
+  // The diff competes with the same total budget. After absorbing what spillover
+  // can cover, any remaining cost is spread across not-yet-processed categories
+  // so totalTokens stays within maxTokens.
+  const prBaseBranch = prDetection.ok ? prDetection.pr.baseBranch : undefined;
+  const rawDiff = getBranchDiff(projectPath, prBaseBranch);
+  if (rawDiff) {
+    const diffTokens = estimateTokens(rawDiff);
+    const diffCap = Math.min(Math.floor(remainingBudget * 0.15), 20000);
+    let diffCost = 0;
+
+    if (diffTokens <= diffCap) {
+      bundle.branchDiff = rawDiff;
+      bundle.totalTokens += diffTokens;
+      diffCost = diffTokens;
+    } else {
+      // Hunk-aware truncation: keep complete per-file diffs, drop later files
+      const fileHunks = splitDiffByFile(rawDiff);
+      const included: string[] = [];
+      const omittedFiles: string[] = [];
+      let usedTokens = 0;
+      for (const hunk of fileHunks) {
+        const hunkTokens = estimateTokens(hunk.content);
+        if (usedTokens + hunkTokens <= diffCap - 100) {
+          included.push(hunk.content);
+          usedTokens += hunkTokens;
+        } else {
+          omittedFiles.push(hunk.file);
+        }
+      }
+      if (included.length > 0) {
+        let truncated = included.join("\n");
+        if (omittedFiles.length > 0) {
+          truncated += "\n\n[... diff truncated — " + omittedFiles.length
+            + " file(s) omitted: " + omittedFiles.join(", ") + " ...]";
+        }
+        bundle.branchDiff = truncated;
+        diffCost = estimateTokens(truncated);
+        bundle.totalTokens += diffCost;
+      }
+    }
+
+    // Absorb diff cost: first from spillover, then proportionally from remaining base budgets
+    if (diffCost > 0) {
+      const absorbedBySpillover = Math.min(spilloverBudget, diffCost);
+      spilloverBudget -= absorbedBySpillover;
+      const deficit = diffCost - absorbedBySpillover;
+
+      if (deficit > 0) {
+        const remainingCats: BudgetCategory[] = ["git", "dependency", "dependent", "test", "type"];
+        const totalRemainingBase = remainingCats.reduce((sum, cat) => sum + baseBudgets[cat], 0);
+        if (totalRemainingBase > 0) {
+          for (const cat of remainingCats) {
+            const reduction = Math.floor(deficit * (baseBudgets[cat] / totalRemainingBase));
+            baseBudgets[cat] = Math.max(0, baseBudgets[cat] - reduction);
+          }
+        }
+      }
+    }
   }
 
   // 3. Git changes not in session
@@ -641,7 +738,7 @@ export async function bundleContext(
   // Process git files with spillover
   const gitBudget = baseBudgets.git + Math.floor(spilloverBudget * 0.5);
   const gitUsed = addFilesWithBudget(gitFiles, "git", gitBudget);
-  getBudgetWithSpillover("git", gitUsed);
+  updateSpillover("git", gitUsed);
 
   // 4. Dependencies (files imported by modified files)
   const depFiles: FileEntry[] = [];
@@ -678,7 +775,7 @@ export async function bundleContext(
   // Process dependency files with spillover
   const depBudget = baseBudgets.dependency + Math.floor(spilloverBudget * 0.5);
   const depUsed = addFilesWithBudget(depFiles, "dependency", depBudget);
-  getBudgetWithSpillover("dependency", depUsed);
+  updateSpillover("dependency", depUsed);
 
   // 5. Dependents (files that import modified files)
   const dependentFiles: FileEntry[] = [];
@@ -712,7 +809,7 @@ export async function bundleContext(
   // Process dependent files with spillover
   const dependentBudget = baseBudgets.dependent + Math.floor(spilloverBudget * 0.5);
   const dependentUsed = addFilesWithBudget(dependentFiles, "dependent", dependentBudget);
-  getBudgetWithSpillover("dependent", dependentUsed);
+  updateSpillover("dependent", dependentUsed);
 
   // 6. Test files
   const testFiles: FileEntry[] = [];
@@ -732,7 +829,7 @@ export async function bundleContext(
   // Process test files with spillover
   const testBudget = baseBudgets.test + Math.floor(spilloverBudget * 0.5);
   const testUsed = addFilesWithBudget(testFiles, "test", testBudget);
-  getBudgetWithSpillover("test", testUsed);
+  updateSpillover("test", testUsed);
 
   // 7. Type files
   const typeFiles: FileEntry[] = [];
