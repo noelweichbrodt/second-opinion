@@ -41,7 +41,8 @@ export function loadConfig(): Config {
       fileConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     } catch (error) {
       console.error(
-        `Warning: Invalid JSON in config file ${configPath}. Using defaults.`
+        `Warning: Invalid JSON in config file ${configPath}. Using defaults.`,
+        error instanceof Error ? error.message : String(error)
       );
     }
   }
@@ -109,6 +110,12 @@ Work through these phases in order:
 ### Phase 3: Detailed Analysis
 - Correctness, security, performance, error handling, edge cases
 
+When a branch diff is provided:
+- Primary focus: code that appears in the diff (new/changed lines)
+- Use the diff to determine if an issue is newly introduced or pre-existing
+- Findings section = only issues in the diff
+- Pre-existing Issues section = legitimate issues NOT in the diff
+
 ### Phase 4: Self-Interrogation
 For each finding: form it as a question, search the code for evidence, then:
 - Confirmed → include as a finding with evidence
@@ -133,11 +140,18 @@ Brief overall assessment.
 
 ### Findings
 Ordered by severity, every finding grounded in specific code.
+When a branch diff is provided, only include issues introduced by the diff.
+
+### Pre-existing Issues
+(Include only when a branch diff is provided and pre-existing issues are found.)
+Issues found in reviewed files that were NOT introduced by this change.
+Same severity labels and evidence requirements as Findings.
 
 ### Questions
 Findings that couldn't be fully grounded.
 
 ### Upstream/Downstream Opportunities
+Architectural suggestions beyond the current change.
 - **What/Where** · **Why** · **Risk Level**: Safe / Worth Investigating / Bold
 
 ### What's Done Well

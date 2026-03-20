@@ -107,7 +107,7 @@ export const SecondOpinionInputSchema = z.object({
     .describe("Include referenced type definitions"),
   maxInputTokens: z
     .number()
-    .default(100000)
+    .default(200000)
     .describe("Maximum tokens for context sent to reviewer"),
   maxOutputTokens: z
     .number()
@@ -321,6 +321,7 @@ export async function executeReview(
     temperature,
     languageHints: languageHints || undefined,
     maxOutputTokens,
+    branchDiff: bundle.branchDiff,
   });
 
   // 9. Derive session name if not provided

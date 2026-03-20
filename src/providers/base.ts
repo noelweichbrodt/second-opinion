@@ -10,6 +10,8 @@ export interface ReviewRequest {
   languageHints?: string;
   /** Maximum tokens for the LLM response. */
   maxOutputTokens?: number;
+  /** Unified git diff from the feature branch (base...HEAD). */
+  branchDiff?: string;
 }
 
 export interface ReviewResponse {
@@ -52,27 +54,41 @@ export function getSystemPrompt(hasTask: boolean): string {
       + "Think in phases: understand the change, assess the architecture, analyze details, "
       + "then interrogate your own findings before presenting them. "
       + "Ground every finding in specific files and lines of code. "
-      + "Look beyond the immediate diff — the right fix may live upstream or downstream.";
+      + "Look beyond the immediate diff — the right fix may live upstream or downstream. "
+      + "When a git diff is provided, focus your Findings section on issues introduced by the diff. "
+      + "Report pre-existing issues separately under Pre-existing Issues.";
 
   return base + VERIFICATION_REQUIREMENTS;
 }
 
 /**
- * Build the full prompt for the LLM
+ * Build the full prompt for the LLM.
+ *
+ * Order: content first (code-context, branch-diff), then instructions.
+ * LLMs attend better to instructions when the context they apply to has already been read.
  */
 export function buildReviewPrompt(request: ReviewRequest): string {
   const parts: string[] = [];
 
-  // XML-like tags create unambiguous section boundaries in high-token prompts,
-  // preventing the LLM from confusing instructions with code that contains
-  // similar markdown patterns.
+  // 1. Code context (full file contents)
+  parts.push("<code-context>");
+  parts.push(request.context);
+  parts.push("</code-context>");
+  parts.push("");
 
-  // When a task is provided, it becomes the primary objective
+  // 2. Branch diff (when available)
+  if (request.branchDiff) {
+    parts.push("<branch-diff>");
+    parts.push(request.branchDiff);
+    parts.push("</branch-diff>");
+    parts.push("");
+  }
+
+  // 3. Task or instructions
   if (request.task) {
     parts.push("<task>");
     parts.push(request.task);
 
-    // Focus areas if specified
     if (request.focusAreas && request.focusAreas.length > 0) {
       parts.push("");
       parts.push("## Focus Areas");
@@ -82,7 +98,6 @@ export function buildReviewPrompt(request: ReviewRequest): string {
       }
     }
 
-    // Additional instructions if specified
     if (request.customPrompt) {
       parts.push("");
       parts.push("## Additional Instructions");
@@ -92,7 +107,7 @@ export function buildReviewPrompt(request: ReviewRequest): string {
     parts.push("</task>");
     parts.push("");
 
-    // Include instructions as reference material
+    // 4. Include instructions as reference material
     if (request.instructions) {
       parts.push("<reference-instructions>");
       parts.push(request.instructions);
@@ -104,7 +119,6 @@ export function buildReviewPrompt(request: ReviewRequest): string {
     parts.push("<instructions>");
     parts.push(request.instructions);
 
-    // Focus areas if specified
     if (request.focusAreas && request.focusAreas.length > 0) {
       parts.push("");
       parts.push("## Specific Focus Areas for This Review");
@@ -114,7 +128,6 @@ export function buildReviewPrompt(request: ReviewRequest): string {
       }
     }
 
-    // Custom prompt if specified (legacy support)
     if (request.customPrompt) {
       parts.push("");
       parts.push("## Additional Instructions");
@@ -125,18 +138,13 @@ export function buildReviewPrompt(request: ReviewRequest): string {
     parts.push("");
   }
 
-  // Language-specific hints (if applicable)
+  // 5. Language-specific hints
   if (request.languageHints) {
     parts.push("<language-hints>");
     parts.push(request.languageHints);
     parts.push("</language-hints>");
     parts.push("");
   }
-
-  // Code context
-  parts.push("<code-context>");
-  parts.push(request.context);
-  parts.push("</code-context>");
 
   return parts.join("\n");
 }

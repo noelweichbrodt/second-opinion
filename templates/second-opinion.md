@@ -39,6 +39,13 @@ Now examine the code for:
 - **Error handling**: Are errors handled, propagated, and surfaced appropriately?
 - **Edge cases**: Empty inputs, concurrent access, boundary conditions
 
+**When a branch diff is provided (`<branch-diff>`):**
+
+- Primary focus: code that appears in the diff (new/changed lines)
+- Use the diff to determine if an issue is newly introduced or pre-existing
+- Findings section = only issues in the diff (new/changed code)
+- Pre-existing Issues section = legitimate issues NOT introduced by the diff
+
 ### Phase 4: Self-Interrogation
 
 Before finalizing your findings, interrogate each one:
@@ -152,6 +159,7 @@ Brief overall assessment. What was changed and your general take.
 ### Findings
 
 Ordered by severity. Every finding grounded in specific code.
+When a branch diff is provided, only include issues introduced by the diff.
 
 **[BLOCKING]** Title
 - **Evidence**: `file:line` — quoted code
@@ -167,13 +175,21 @@ Ordered by severity. Every finding grounded in specific code.
 - **Where**: `file:line`
 - Brief description
 
+### Pre-existing Issues
+
+*(Include only when a branch diff is provided and pre-existing issues are found.)*
+
+Issues found in reviewed files that were NOT introduced by this change.
+Same severity labels and evidence requirements as Findings.
+These are lower priority — the author didn't create them.
+
 ### Questions
 
 Findings that couldn't be fully grounded — framed as genuine questions for the author.
 
 ### Upstream/Downstream Opportunities
 
-Changes outside the immediate diff that could improve the overall design:
+Architectural suggestions beyond the current change:
 
 - **What/Where**: What change, where in the stack
 - **Why**: How it simplifies the current code
