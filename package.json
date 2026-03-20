@@ -35,11 +35,12 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/install-config.js",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "release": "release-it",
     "prepublishOnly": "npm run build",
     "postinstall": "node scripts/install-config.js",
     "install-config": "node scripts/install-config.js"
@@ -52,8 +53,11 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@release-it/bumper": "^7.0.5",
+    "@release-it/conventional-changelog": "^10.0.6",
     "@types/node": "^22.10.5",
     "@vitest/coverage-v8": "^4.0.18",
+    "release-it": "^19.2.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^4.0.18"

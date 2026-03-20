@@ -15,7 +15,7 @@ export function createServer(): Server {
   const server = new Server(
     {
       name: "second-opinion",
-      version: "0.1.0",
+      version: "0.5.1",
     },
     {
       capabilities: {
