@@ -32,6 +32,15 @@ export const BUDGET_ALLOCATION = {
 export type BudgetCategory = keyof typeof BUDGET_ALLOCATION;
 
 /**
+ * Fixed overhead caps for non-file context (branch diff).
+ * These are subtracted from the total pool before file budget allocation.
+ */
+export const FIXED_OVERHEAD_CAPS = {
+  branchDiffFraction: 0.15,
+  branchDiffAbsoluteMax: 20000,
+} as const;
+
+/**
  * Priority order for processing categories during budget allocation.
  * Higher priority categories are processed first and get their allocation.
  * Unused budget from earlier categories spills over to later ones.

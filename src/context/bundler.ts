@@ -21,6 +21,8 @@ import {
   estimateTokens,
   BUDGET_ALLOCATION,
   BudgetCategory,
+  CATEGORY_PRIORITY_ORDER,
+  FIXED_OVERHEAD_CAPS,
 } from "../utils/tokens.js";
 import { redactSecrets } from "../security/redactor.js";
 
@@ -368,8 +370,232 @@ function readFileEntry(
   }
 }
 
+export interface CandidateFile {
+  path: string;
+  content: string;
+  category: FileEntry["category"];
+  tokenEstimate: number;
+  annotation?: string;
+  redactionCount: number;
+  redactedTypes: string[];
+}
+
+function toFileEntry(file: CandidateFile): FileEntry {
+  return {
+    path: file.path,
+    content: file.content,
+    category: file.category,
+    tokenEstimate: file.tokenEstimate,
+    annotation: file.annotation,
+  };
+}
+
 /**
- * Collect and bundle all context for review
+ * Check if a path is sensitive and add to omitted list if so. Returns true if blocked.
+ */
+function omitIfSensitive(
+  filePath: string,
+  category: FileEntry["category"],
+  omittedFiles: OmittedFile[]
+): boolean {
+  if (isSensitivePath(path.normalize(filePath))) {
+    omittedFiles.push({ path: filePath, category, tokenEstimate: 0, reason: "sensitive_path" });
+    return true;
+  }
+  return false;
+}
+
+export interface CategoryCandidates {
+  category: BudgetCategory;
+  files: CandidateFile[];
+  totalDemand: number;
+}
+
+export interface AllocationResult {
+  included: FileEntry[];
+  omitted: OmittedFile[];
+  categoryTokens: Record<BudgetCategory, number>;
+}
+
+/**
+ * Two-pass budget allocator.
+ *
+ * If total demand <= filePool, include everything (common case, fixes the original bug).
+ * If total demand > filePool, redistribute surplus from low-demand categories to high-demand ones.
+ *
+ * Within each category:
+ * - explicit/session: preserve insertion order (user intent)
+ * - all others: sort smallest first (maximize file count)
+ */
+export function allocateBudget(
+  candidates: CategoryCandidates[],
+  filePool: number,
+  budgetWeights: Record<BudgetCategory, number>,
+  priorityOrder: BudgetCategory[]
+): AllocationResult {
+  const included: FileEntry[] = [];
+  // Internal omitted list stores full candidates so rescued files can be promoted
+  const omitted: CandidateFile[] = [];
+  let totalUsed = 0;
+  const categoryTokens = Object.fromEntries(
+    priorityOrder.map((cat) => [cat, 0])
+  ) as Record<BudgetCategory, number>;
+
+  const totalDemand = candidates.reduce((sum, c) => sum + c.totalDemand, 0);
+
+  // Fast path: everything fits
+  if (totalDemand <= filePool) {
+    for (const { category, files } of candidates) {
+      for (const file of files) {
+        included.push(toFileEntry(file));
+        categoryTokens[category] += file.tokenEstimate;
+      }
+    }
+    return { included, omitted: [], categoryTokens };
+  }
+
+  // Contention path: surplus redistribution
+  const demandMap = new Map<BudgetCategory, number>();
+  const candidateMap = new Map<BudgetCategory, CandidateFile[]>();
+  for (const { category, files, totalDemand: d } of candidates) {
+    demandMap.set(category, d);
+    candidateMap.set(category, files);
+  }
+
+  // Compute effective allocations via iterative surplus redistribution.
+  // All categories participate (even empty ones) so their unused base allocation
+  // is available as surplus for categories with demand.
+  const effectiveAlloc = new Map<BudgetCategory, number>();
+
+  // Initialize base allocations for ALL categories
+  for (const cat of priorityOrder) {
+    effectiveAlloc.set(cat, filePool * (budgetWeights[cat] ?? 0));
+  }
+
+  // Up to 3 rounds of redistribution
+  for (let round = 0; round < 3; round++) {
+    let totalSurplus = 0;
+    let totalDeficit = 0;
+    const surplusCats: BudgetCategory[] = [];
+    const deficitCats: BudgetCategory[] = [];
+
+    for (const cat of priorityOrder) {
+      const demand = demandMap.get(cat) ?? 0;
+      const alloc = effectiveAlloc.get(cat) ?? 0;
+      if (demand <= alloc) {
+        totalSurplus += alloc - demand;
+        surplusCats.push(cat);
+      } else {
+        totalDeficit += demand - alloc;
+        deficitCats.push(cat);
+      }
+    }
+
+    if (totalSurplus === 0 || totalDeficit === 0) break;
+
+    // Set surplus categories to their demand, distribute surplus to deficit categories
+    for (const cat of surplusCats) {
+      effectiveAlloc.set(cat, demandMap.get(cat) ?? 0);
+    }
+    for (const cat of deficitCats) {
+      const alloc = effectiveAlloc.get(cat) ?? 0;
+      const deficit = (demandMap.get(cat) ?? 0) - alloc;
+      effectiveAlloc.set(cat, alloc + totalSurplus * (deficit / totalDeficit));
+    }
+  }
+
+  // Select files within each category's effective allocation
+  for (const cat of priorityOrder) {
+    const files = candidateMap.get(cat);
+    if (!files || files.length === 0) continue;
+
+    const budget = effectiveAlloc.get(cat) ?? 0;
+
+    // Sort: explicit/session preserve insertion order, others smallest-first
+    const sorted = cat === "explicit" || cat === "session"
+      ? files
+      : [...files].sort((a, b) => a.tokenEstimate - b.tokenEstimate);
+
+    let used = 0;
+    for (const file of sorted) {
+      if (used + file.tokenEstimate <= budget) {
+        included.push(toFileEntry(file));
+        categoryTokens[cat] += file.tokenEstimate;
+        used += file.tokenEstimate;
+        totalUsed += file.tokenEstimate;
+      } else {
+        omitted.push(file);
+      }
+    }
+  }
+
+  // Global remainder fill: rescue omitted files that fit in unused global budget.
+  // This handles the edge case where a file exceeds its category's effective
+  // allocation but would fit in the overall pool.
+  let globalRemaining = filePool - totalUsed;
+
+  if (globalRemaining > 0 && omitted.length > 0) {
+    const sorted = [...omitted].sort((a, b) => {
+      const priA = priorityOrder.indexOf(a.category as BudgetCategory);
+      const priB = priorityOrder.indexOf(b.category as BudgetCategory);
+      if (priA !== priB) return priA - priB;
+      return a.tokenEstimate - b.tokenEstimate;
+    });
+
+    const rescued = new Set<CandidateFile>();
+    for (const file of sorted) {
+      if (file.tokenEstimate <= globalRemaining) {
+        included.push(toFileEntry(file));
+        categoryTokens[file.category as BudgetCategory] += file.tokenEstimate;
+        globalRemaining -= file.tokenEstimate;
+        rescued.add(file);
+      }
+    }
+
+    if (rescued.size > 0) {
+      const finalOmitted = omitted.filter((f) => !rescued.has(f));
+      return {
+        included,
+        omitted: finalOmitted.map((f) => ({
+          path: f.path, category: f.category, tokenEstimate: f.tokenEstimate, reason: "budget_exceeded" as const,
+        })),
+        categoryTokens,
+      };
+    }
+  }
+
+  return {
+    included,
+    omitted: omitted.map((f) => ({
+      path: f.path, category: f.category, tokenEstimate: f.tokenEstimate, reason: "budget_exceeded" as const,
+    })),
+    categoryTokens,
+  };
+}
+
+/**
+ * Convert a ReadFileResult into a CandidateFile (returns null if the file couldn't be read)
+ */
+function toCandidateFile(result: ReadFileResult): CandidateFile | null {
+  if (!result.entry) return null;
+  return {
+    path: result.entry.path,
+    content: result.entry.content,
+    category: result.entry.category,
+    tokenEstimate: result.entry.tokenEstimate,
+    annotation: result.entry.annotation,
+    redactionCount: result.redactionCount,
+    redactedTypes: result.redactedTypes,
+  };
+}
+
+/**
+ * Collect and bundle all context for review.
+ *
+ * Two-pass architecture:
+ *   Pass 1 (Collection): Gather all candidate files per category without committing budget.
+ *   Deduplication: Assign each file to its highest-priority category.
+ *   Pass 2 (Allocation): Distribute the file pool across categories via allocateBudget().
  */
 export async function bundleContext(
   options: BundleOptions
@@ -410,126 +636,105 @@ export async function bundleContext(
     budgetWarnings: [],
   };
 
-  const addedFiles = new Set<string>();
   const allRedactedTypes = new Set<string>();
 
-  const accumulateRedactionStats = (result: ReadFileResult): void => {
-    bundle.redactionStats.totalCount += result.redactionCount;
-    for (const type of result.redactedTypes) {
-      allRedactedTypes.add(type);
-    }
-  };
-
-  // 1. Get session context first to know conversation size
+  // ─── Fixed overhead: conversation context ───
   let sessionContext: SessionContext | null = null;
   const sid = sessionId || findLatestSession(projectPath);
-
   if (sid) {
     sessionContext = parseSession(projectPath, sid);
   }
 
-  // Add conversation context and calculate remaining budget
-  let remainingBudget = maxTokens;
+  let conversationTokens = 0;
   if (includeConversation && sessionContext) {
     bundle.conversationContext = formatConversationContext(sessionContext);
-    const conversationTokens = estimateTokens(bundle.conversationContext);
-    bundle.totalTokens += conversationTokens;
-    remainingBudget -= conversationTokens;
+    conversationTokens = estimateTokens(bundle.conversationContext);
   }
 
-  // Calculate base budget for each category (used for spillover calculation)
-  const baseBudgets = Object.fromEntries(
-    Object.entries(BUDGET_ALLOCATION).map(([cat, pct]) => [
-      cat,
-      Math.floor(remainingBudget * pct),
-    ])
-  ) as Record<BudgetCategory, number>;
+  // ─── Fixed overhead: PR metadata ───
+  let prMetadataTokens = 0;
+  const prDetection = detectPR(projectPath, prNumber);
+  if (prDetection.ok) {
+    const prContext = prDetection.pr;
+    const prMetadata = formatPRMetadata(prContext);
+    prMetadataTokens = estimateTokens(prMetadata);
+    bundle.prContext = prMetadata;
+    bundle.prMetadata = {
+      number: prContext.number,
+      url: prContext.url,
+      commentsCount: prContext.comments.length,
+      reviewsCount: prContext.reviews.length,
+    };
+  } else if (prDetection.reason !== "no_pr_found") {
+    bundle.prDetectionFailure = { reason: prDetection.reason, message: prDetection.message };
+  }
 
-  // Track spillover budget from underutilized categories
-  let spilloverBudget = 0;
+  // ─── Fixed overhead: branch diff ───
+  const prBaseBranch = prDetection.ok ? prDetection.pr.baseBranch : undefined;
+  const rawDiff = getBranchDiff(projectPath, prBaseBranch);
+  let branchDiffTokens = 0;
+  if (rawDiff) {
+    const diffTokens = estimateTokens(rawDiff);
+    const remainingForDiffCap = maxTokens - conversationTokens - prMetadataTokens;
+    const diffCap = Math.min(
+      Math.floor(remainingForDiffCap * FIXED_OVERHEAD_CAPS.branchDiffFraction),
+      FIXED_OVERHEAD_CAPS.branchDiffAbsoluteMax
+    );
 
-  // Track omitted files per category for budget warnings
-  const categoryOmissions: Partial<
-    Record<BudgetCategory, { count: number; tokens: number; files: string[] }>
-  > = {};
-
-  // Helper to add files within a budget, returns tokens used
-  const addFilesWithBudget = (
-    files: FileEntry[],
-    category: FileEntry["category"],
-    budget: number,
-    options?: { skipBoundsCheck?: boolean }
-  ): number => {
-    let used = 0;
-    for (const file of files) {
-      // Bounds check: skip files outside project (unless explicitly included)
-      if (!options?.skipBoundsCheck && !isWithinProject(file.path, projectPath)) {
-        bundle.omittedFiles.push({
-          path: file.path,
-          category,
-          tokenEstimate: file.tokenEstimate,
-          reason: "outside_project",
-        });
-        continue;
-      }
-      if (used + file.tokenEstimate > budget) {
-        // Track omitted files that exceeded budget
-        bundle.omittedFiles.push({
-          path: file.path,
-          category,
-          tokenEstimate: file.tokenEstimate,
-          reason: "budget_exceeded",
-        });
-
-        // Track omissions for high-priority categories (for budget warnings)
-        if (category === "explicit" || category === "session") {
-          if (!categoryOmissions[category]) {
-            categoryOmissions[category] = { count: 0, tokens: 0, files: [] };
-          }
-          categoryOmissions[category]!.count++;
-          categoryOmissions[category]!.tokens += file.tokenEstimate;
-          categoryOmissions[category]!.files.push(file.path);
+    if (diffTokens <= diffCap) {
+      bundle.branchDiff = rawDiff;
+      branchDiffTokens = diffTokens;
+    } else {
+      // Hunk-aware truncation: keep complete per-file diffs, drop later files
+      const fileHunks = splitDiffByFile(rawDiff);
+      const includedHunks: string[] = [];
+      const omittedDiffFiles: string[] = [];
+      let usedTokens = 0;
+      for (const hunk of fileHunks) {
+        const hunkTokens = estimateTokens(hunk.content);
+        if (usedTokens + hunkTokens <= diffCap - 100) {
+          includedHunks.push(hunk.content);
+          usedTokens += hunkTokens;
+        } else {
+          omittedDiffFiles.push(hunk.file);
         }
-        continue;
       }
-      if (!addedFiles.has(file.path)) {
-        bundle.files.push(file);
-        addedFiles.add(file.path);
-        used += file.tokenEstimate;
-        bundle.categories[category] += file.tokenEstimate;
-        bundle.totalTokens += file.tokenEstimate;
+      if (includedHunks.length > 0) {
+        let truncated = includedHunks.join("\n");
+        if (omittedDiffFiles.length > 0) {
+          truncated += "\n\n[... diff truncated — " + omittedDiffFiles.length
+            + " file(s) omitted: " + omittedDiffFiles.join(", ") + " ...]";
+        }
+        bundle.branchDiff = truncated;
+        branchDiffTokens = estimateTokens(truncated);
       }
     }
-    return used;
-  };
+  }
 
-  /**
-   * After processing a category, update spilloverBudget:
-   * unused base budget flows into the spillover pool for later categories.
-   */
-  const updateSpillover = (
-    category: BudgetCategory,
-    usedTokens: number
-  ): void => {
-    const baseBudget = baseBudgets[category];
-    // Add half of the spillover to this category (save some for later categories)
-    const bonusBudget = Math.floor(spilloverBudget * 0.5);
-    const effectiveBudget = baseBudget + bonusBudget;
+  // ─── Compute file pool ───
+  const filePool = Math.max(0, maxTokens - conversationTokens - prMetadataTokens - branchDiffTokens);
+  bundle.totalTokens = conversationTokens + prMetadataTokens + branchDiffTokens;
 
-    // Calculate new spillover: unused from this category's base + remaining spillover
-    const unusedFromBase = Math.max(0, baseBudget - usedTokens);
-    spilloverBudget = unusedFromBase + (spilloverBudget - bonusBudget);
-  };
+  // ═══════════════════════════════════════════════
+  // PASS 1: Collect all candidates per category
+  // ═══════════════════════════════════════════════
 
-  // 1a. Process explicitly included files first (highest priority)
-  const explicitFiles: FileEntry[] = [];
+  const candidateMap = new Map<BudgetCategory, CandidateFile[]>();
+  for (const cat of CATEGORY_PRIORITY_ORDER) {
+    candidateMap.set(cat, []);
+  }
+
+  // Track paths we've seen (for cross-category dedup and dependency discovery)
+  const seenPaths = new Set<string>();
+  const modifiedFiles: string[] = [];
+
+  // 1. Explicit files
   if (includeFiles.length > 0) {
     for (const inputPath of includeFiles) {
       const { files: expandedPaths, blocked } = expandPath(inputPath, projectPath, {
         allowExternalFiles,
       });
 
-      // Track blocked paths (sensitive or outside project)
       for (const blockedFile of blocked) {
         bundle.omittedFiles.push({
           path: blockedFile.path,
@@ -540,27 +745,20 @@ export async function bundleContext(
       }
 
       for (const filePath of expandedPaths) {
+        if (seenPaths.has(filePath)) continue;
         const result = readFileEntry(filePath, "explicit");
-        if (result.entry) {
-          explicitFiles.push(result.entry);
-          accumulateRedactionStats(result);
+        const candidate = toCandidateFile(result);
+        if (candidate) {
+          candidateMap.get("explicit")!.push(candidate);
+
+          seenPaths.add(filePath);
         }
       }
     }
   }
-  // Process explicit files with spillover tracking
-  const explicitBudget = baseBudgets.explicit + spilloverBudget;
-  const explicitUsed = addFilesWithBudget(explicitFiles, "explicit", explicitBudget, {
-    skipBoundsCheck: true,
-  });
-  updateSpillover("explicit", explicitUsed);
 
-  // 2. Collect session files (files Claude read/edited/wrote)
-  const sessionFiles: FileEntry[] = [];
-  const modifiedFiles: string[] = [];
-
+  // 2. Session files
   if (sessionContext) {
-    // Build annotation map: priority order read < edited < written
     const sessionAnnotations = new Map<string, string>();
     for (const filePath of sessionContext.filesRead) {
       sessionAnnotations.set(filePath, "Read during session");
@@ -572,7 +770,6 @@ export async function bundleContext(
       sessionAnnotations.set(filePath, "Modified in session");
     }
 
-    // Files from session - use content Claude saw if available
     const allSessionFiles = [
       ...sessionContext.filesWritten,
       ...sessionContext.filesEdited,
@@ -580,12 +777,16 @@ export async function bundleContext(
     ];
 
     for (const filePath of allSessionFiles) {
+      if (seenPaths.has(filePath)) continue;
+      if (omitIfSensitive(filePath, "session", bundle.omittedFiles)) continue;
       const cachedContent = sessionContext.fileContents.get(filePath);
       const result = readFileEntry(filePath, "session", cachedContent);
-      if (result.entry) {
-        result.entry.annotation = sessionAnnotations.get(filePath);
-        sessionFiles.push(result.entry);
-        accumulateRedactionStats(result);
+      const candidate = toCandidateFile(result);
+      if (candidate) {
+        candidate.annotation = sessionAnnotations.get(filePath);
+        candidateMap.get("session")!.push(candidate);
+
+        seenPaths.add(filePath);
         if (
           sessionContext.filesWritten.includes(filePath) ||
           sessionContext.filesEdited.includes(filePath)
@@ -596,154 +797,47 @@ export async function bundleContext(
     }
   }
 
-  // Process session files with spillover
-  const sessionBudget = baseBudgets.session + Math.floor(spilloverBudget * 0.5);
-  const sessionUsed = addFilesWithBudget(sessionFiles, "session", sessionBudget);
-  updateSpillover("session", sessionUsed);
-
-  // 2b. PR context (auto-detected or explicit prNumber)
-  const prDetection = detectPR(projectPath, prNumber);
+  // 3. PR changed files
   if (prDetection.ok) {
     const prContext = prDetection.pr;
-
-    // Format PR metadata and subtract from remaining budget
-    const prMetadata = formatPRMetadata(prContext);
-    const prMetadataTokens = estimateTokens(prMetadata);
-    bundle.prContext = prMetadata;
-    bundle.prMetadata = {
-      number: prContext.number,
-      url: prContext.url,
-      commentsCount: prContext.comments.length,
-      reviewsCount: prContext.reviews.length,
-    };
-    bundle.totalTokens += prMetadataTokens;
-
-    // Read PR changed files (with path validation)
-    const prFiles: FileEntry[] = [];
     for (const filePath of prContext.changedFiles) {
-      if (addedFiles.has(filePath)) continue;
+      if (seenPaths.has(filePath)) continue;
 
-      const normalizedPath = path.normalize(filePath);
-      if (isSensitivePath(normalizedPath)) {
-        bundle.omittedFiles.push({ path: filePath, category: "pr", tokenEstimate: 0, reason: "sensitive_path" });
-        continue;
-      }
-      if (!isWithinProject(normalizedPath, projectPath)) {
+      if (omitIfSensitive(filePath, "pr", bundle.omittedFiles)) continue;
+      if (!isWithinProject(path.normalize(filePath), projectPath)) {
         bundle.omittedFiles.push({ path: filePath, category: "pr", tokenEstimate: 0, reason: "outside_project" });
         continue;
       }
 
       const result = readFileEntry(filePath, "pr");
-      if (result.entry) {
-        result.entry.annotation = `Changed in PR #${prContext.number}`;
-        prFiles.push(result.entry);
-        accumulateRedactionStats(result);
+      const candidate = toCandidateFile(result);
+      if (candidate) {
+        candidate.annotation = `Changed in PR #${prContext.number}`;
+        candidateMap.get("pr")!.push(candidate);
+
+        seenPaths.add(filePath);
         modifiedFiles.push(filePath);
       }
     }
-
-    // Sort by token count (smaller files first to fit more)
-    prFiles.sort((a, b) => a.tokenEstimate - b.tokenEstimate);
-
-    // Process PR files with spillover
-    const prBudget = baseBudgets.pr + Math.floor(spilloverBudget * 0.5);
-    const prUsed = addFilesWithBudget(prFiles, "pr", prBudget);
-    updateSpillover("pr", prUsed);
-  } else {
-    // Surface failure reason (except no_pr_found which is normal)
-    if (prDetection.reason !== "no_pr_found") {
-      bundle.prDetectionFailure = { reason: prDetection.reason, message: prDetection.message };
-    }
-    // No PR — spillover the full pr budget to later categories
-    updateSpillover("pr", 0);
   }
 
-  // 2c. Collect branch diff (feature branch vs base)
-  // The diff competes with the same total budget. After absorbing what spillover
-  // can cover, any remaining cost is spread across not-yet-processed categories
-  // so totalTokens stays within maxTokens.
-  const prBaseBranch = prDetection.ok ? prDetection.pr.baseBranch : undefined;
-  const rawDiff = getBranchDiff(projectPath, prBaseBranch);
-  if (rawDiff) {
-    const diffTokens = estimateTokens(rawDiff);
-    const diffCap = Math.min(Math.floor(remainingBudget * 0.15), 20000);
-    let diffCost = 0;
-
-    if (diffTokens <= diffCap) {
-      bundle.branchDiff = rawDiff;
-      bundle.totalTokens += diffTokens;
-      diffCost = diffTokens;
-    } else {
-      // Hunk-aware truncation: keep complete per-file diffs, drop later files
-      const fileHunks = splitDiffByFile(rawDiff);
-      const included: string[] = [];
-      const omittedFiles: string[] = [];
-      let usedTokens = 0;
-      for (const hunk of fileHunks) {
-        const hunkTokens = estimateTokens(hunk.content);
-        if (usedTokens + hunkTokens <= diffCap - 100) {
-          included.push(hunk.content);
-          usedTokens += hunkTokens;
-        } else {
-          omittedFiles.push(hunk.file);
-        }
-      }
-      if (included.length > 0) {
-        let truncated = included.join("\n");
-        if (omittedFiles.length > 0) {
-          truncated += "\n\n[... diff truncated — " + omittedFiles.length
-            + " file(s) omitted: " + omittedFiles.join(", ") + " ...]";
-        }
-        bundle.branchDiff = truncated;
-        diffCost = estimateTokens(truncated);
-        bundle.totalTokens += diffCost;
-      }
-    }
-
-    // Absorb diff cost: first from spillover, then proportionally from remaining base budgets
-    if (diffCost > 0) {
-      const absorbedBySpillover = Math.min(spilloverBudget, diffCost);
-      spilloverBudget -= absorbedBySpillover;
-      const deficit = diffCost - absorbedBySpillover;
-
-      if (deficit > 0) {
-        const remainingCats: BudgetCategory[] = ["git", "dependency", "dependent", "test", "type"];
-        const totalRemainingBase = remainingCats.reduce((sum, cat) => sum + baseBudgets[cat], 0);
-        if (totalRemainingBase > 0) {
-          for (const cat of remainingCats) {
-            const reduction = Math.floor(deficit * (baseBudgets[cat] / totalRemainingBase));
-            baseBudgets[cat] = Math.max(0, baseBudgets[cat] - reduction);
-          }
-        }
-      }
-    }
-  }
-
-  // 3. Git changes not in session
+  // 4. Git changes not in session
   const gitChangedFiles = getAllModifiedFiles(projectPath);
-  const gitFiles: FileEntry[] = [];
-
   for (const filePath of gitChangedFiles) {
-    if (!addedFiles.has(filePath)) {
-      const result = readFileEntry(filePath, "git");
-      if (result.entry) {
-        result.entry.annotation = "Uncommitted changes";
-        gitFiles.push(result.entry);
-        accumulateRedactionStats(result);
-        modifiedFiles.push(filePath);
-      }
+    if (seenPaths.has(filePath)) continue;
+    if (omitIfSensitive(filePath, "git", bundle.omittedFiles)) continue;
+    const result = readFileEntry(filePath, "git");
+    const candidate = toCandidateFile(result);
+    if (candidate) {
+      candidate.annotation = "Uncommitted changes";
+      candidateMap.get("git")!.push(candidate);
+      seenPaths.add(filePath);
+      modifiedFiles.push(filePath);
     }
   }
 
-  // Process git files with spillover
-  const gitBudget = baseBudgets.git + Math.floor(spilloverBudget * 0.5);
-  const gitUsed = addFilesWithBudget(gitFiles, "git", gitBudget);
-  updateSpillover("git", gitUsed);
-
-  // 4. Dependencies (files imported by modified files)
-  const depFiles: FileEntry[] = [];
+  // 5. Dependencies
   if (includeDependencies && modifiedFiles.length > 0) {
-    // Build map of dep → which modified files import it (for annotations)
     const depImporterMap = new Map<string, string[]>();
     for (const modFile of modifiedFiles) {
       const deps = getDependencies(modFile, projectPath);
@@ -756,108 +850,160 @@ export async function bundleContext(
     }
 
     for (const [dep, importers] of depImporterMap) {
-      if (!addedFiles.has(dep)) {
-        const result = readFileEntry(dep, "dependency");
-        if (result.entry) {
-          const relImporters = importers.map((f) =>
-            path.relative(projectPath, f)
-          );
-          result.entry.annotation = `Imported by ${relImporters.join(", ")}`;
-          depFiles.push(result.entry);
-          accumulateRedactionStats(result);
+      if (seenPaths.has(dep)) continue;
+      if (omitIfSensitive(dep, "dependency", bundle.omittedFiles)) continue;
+      const result = readFileEntry(dep, "dependency");
+      const candidate = toCandidateFile(result);
+      if (candidate) {
+        // Bounds check for auto-discovered files
+        if (!isWithinProject(dep, projectPath)) {
+          bundle.omittedFiles.push({
+            path: dep,
+            category: "dependency",
+            tokenEstimate: candidate.tokenEstimate,
+            reason: "outside_project",
+          });
+          continue;
         }
+        const relImporters = importers.map((f) => path.relative(projectPath, f));
+        candidate.annotation = `Imported by ${relImporters.join(", ")}`;
+        candidateMap.get("dependency")!.push(candidate);
+
+        seenPaths.add(dep);
       }
     }
-
-    // Sort by token count (smaller files first to fit more)
-    depFiles.sort((a, b) => a.tokenEstimate - b.tokenEstimate);
   }
-  // Process dependency files with spillover
-  const depBudget = baseBudgets.dependency + Math.floor(spilloverBudget * 0.5);
-  const depUsed = addFilesWithBudget(depFiles, "dependency", depBudget);
-  updateSpillover("dependency", depUsed);
 
-  // 5. Dependents (files that import modified files)
-  const dependentFiles: FileEntry[] = [];
+  // 6. Dependents
   if (includeDependents && modifiedFiles.length > 0) {
-    // Build import index once, use for both dependent detection and annotations
     const importIndex = await buildImportIndex(projectPath);
     const dependents = getDependentsFromIndex(modifiedFiles, importIndex);
 
     for (const dep of dependents) {
-      if (!addedFiles.has(dep)) {
-        const result = readFileEntry(dep, "dependent");
-        if (result.entry) {
-          // Find which modified files this dependent imports
-          const importsModified: string[] = [];
-          for (const modFile of modifiedFiles) {
-            if (importIndex.importedBy.get(modFile)?.has(dep)) {
-              importsModified.push(path.relative(projectPath, modFile));
-            }
-          }
-          if (importsModified.length > 0) {
-            result.entry.annotation = `Imports ${importsModified.join(", ")}`;
-          }
-          dependentFiles.push(result.entry);
-          accumulateRedactionStats(result);
+      if (seenPaths.has(dep)) continue;
+      if (omitIfSensitive(dep, "dependent", bundle.omittedFiles)) continue;
+      const result = readFileEntry(dep, "dependent");
+      const candidate = toCandidateFile(result);
+      if (candidate) {
+        if (!isWithinProject(dep, projectPath)) {
+          bundle.omittedFiles.push({
+            path: dep,
+            category: "dependent",
+            tokenEstimate: candidate.tokenEstimate,
+            reason: "outside_project",
+          });
+          continue;
         }
+        const importsModified: string[] = [];
+        for (const modFile of modifiedFiles) {
+          if (importIndex.importedBy.get(modFile)?.has(dep)) {
+            importsModified.push(path.relative(projectPath, modFile));
+          }
+        }
+        if (importsModified.length > 0) {
+          candidate.annotation = `Imports ${importsModified.join(", ")}`;
+        }
+        candidateMap.get("dependent")!.push(candidate);
+
+        seenPaths.add(dep);
       }
     }
-
-    dependentFiles.sort((a, b) => a.tokenEstimate - b.tokenEstimate);
   }
-  // Process dependent files with spillover
-  const dependentBudget = baseBudgets.dependent + Math.floor(spilloverBudget * 0.5);
-  const dependentUsed = addFilesWithBudget(dependentFiles, "dependent", dependentBudget);
-  updateSpillover("dependent", dependentUsed);
 
-  // 6. Test files
-  const testFiles: FileEntry[] = [];
+  // 7. Test files
   if (includeTests && modifiedFiles.length > 0) {
     const tests = findTestFilesForFiles(modifiedFiles, projectPath);
-
     for (const test of tests) {
-      if (!addedFiles.has(test)) {
-        const result = readFileEntry(test, "test");
-        if (result.entry) {
-          testFiles.push(result.entry);
-          accumulateRedactionStats(result);
-        }
+      if (seenPaths.has(test)) continue;
+      if (omitIfSensitive(test, "test", bundle.omittedFiles)) continue;
+      const result = readFileEntry(test, "test");
+      const candidate = toCandidateFile(result);
+      if (candidate) {
+        candidateMap.get("test")!.push(candidate);
+
+        seenPaths.add(test);
       }
     }
   }
-  // Process test files with spillover
-  const testBudget = baseBudgets.test + Math.floor(spilloverBudget * 0.5);
-  const testUsed = addFilesWithBudget(testFiles, "test", testBudget);
-  updateSpillover("test", testUsed);
 
-  // 7. Type files
-  const typeFiles: FileEntry[] = [];
+  // 8. Type files
   if (includeTypes && modifiedFiles.length > 0) {
     const types = await findTypeFilesForFiles(modifiedFiles, projectPath);
-
     for (const typeFile of types) {
-      if (!addedFiles.has(typeFile)) {
-        const result = readFileEntry(typeFile, "type");
-        if (result.entry) {
-          typeFiles.push(result.entry);
-          accumulateRedactionStats(result);
-        }
+      if (seenPaths.has(typeFile)) continue;
+      if (omitIfSensitive(typeFile, "type", bundle.omittedFiles)) continue;
+      const result = readFileEntry(typeFile, "type");
+      const candidate = toCandidateFile(result);
+      if (candidate) {
+        candidateMap.get("type")!.push(candidate);
+
+        seenPaths.add(typeFile);
       }
     }
   }
-  // Process type files with spillover (gets all remaining spillover)
-  const typeBudget = baseBudgets.type + spilloverBudget;
-  addFilesWithBudget(typeFiles, "type", typeBudget);
 
-  // Finalize redaction stats
+  // ═══════════════════════════════════════════════
+  // PASS 2: Allocate budget across categories
+  // ═══════════════════════════════════════════════
+
+  const categoryCandidates: CategoryCandidates[] = [];
+  for (const cat of CATEGORY_PRIORITY_ORDER) {
+    const files = candidateMap.get(cat) ?? [];
+    if (files.length > 0) {
+      categoryCandidates.push({
+        category: cat,
+        files,
+        totalDemand: files.reduce((sum, f) => sum + f.tokenEstimate, 0),
+      });
+    }
+  }
+
+  const allocation = allocateBudget(
+    categoryCandidates,
+    filePool,
+    BUDGET_ALLOCATION,
+    CATEGORY_PRIORITY_ORDER
+  );
+
+  bundle.files = allocation.included;
+  bundle.omittedFiles.push(...allocation.omitted);
+  bundle.categories = allocation.categoryTokens;
+  bundle.totalTokens += allocation.included.reduce((sum, f) => sum + f.tokenEstimate, 0);
+
+  // Finalize redaction stats — only from included files (not omitted candidates)
+  const candidateByPath = new Map<string, CandidateFile>();
+  for (const [, files] of candidateMap) {
+    for (const f of files) candidateByPath.set(f.path, f);
+  }
+  for (const included of allocation.included) {
+    const candidate = candidateByPath.get(included.path);
+    if (candidate) {
+      bundle.redactionStats.totalCount += candidate.redactionCount;
+      for (const type of candidate.redactedTypes) allRedactedTypes.add(type);
+    }
+  }
   bundle.redactionStats.types = Array.from(allRedactedTypes);
 
   // Generate budget warnings for high-priority file omissions
+  const budgetOmissions = allocation.omitted.filter((f) => f.reason === "budget_exceeded");
+  const categoryOmissions: Partial<
+    Record<BudgetCategory, { count: number; tokens: number; files: string[] }>
+  > = {};
+  for (const omitted of budgetOmissions) {
+    if (omitted.category === "explicit" || omitted.category === "session") {
+      if (!categoryOmissions[omitted.category]) {
+        categoryOmissions[omitted.category] = { count: 0, tokens: 0, files: [] };
+      }
+      categoryOmissions[omitted.category]!.count++;
+      categoryOmissions[omitted.category]!.tokens += omitted.tokenEstimate;
+      categoryOmissions[omitted.category]!.files.push(omitted.path);
+    }
+  }
+
   for (const [category, info] of Object.entries(categoryOmissions)) {
     if (info && info.count > 0) {
       const suggestedBudget =
-        Math.ceil((maxTokens + info.tokens + 5000) / 10000) * 10000; // Round up to nearest 10k
+        Math.ceil((maxTokens + info.tokens + 5000) / 10000) * 10000;
       bundle.budgetWarnings.push({
         severity: category === "explicit" ? "high" : "medium",
         category: category as FileEntry["category"],

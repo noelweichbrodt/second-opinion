@@ -2,8 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { bundleContext, formatBundleAsMarkdown } from "./bundler.js";
+import { bundleContext, formatBundleAsMarkdown, allocateBudget, CategoryCandidates, CandidateFile, FileEntry } from "./bundler.js";
+import { BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER } from "../utils/tokens.js";
 import { createTempDir, cleanupTempDir, createProjectStructure } from "../test-utils.js";
+
+/** Test helper: create a CandidateFile with sensible defaults for redaction fields */
+function candidate(path: string, category: FileEntry["category"], tokenEstimate: number, content?: string): CandidateFile {
+  return { path, content: content ?? "x".repeat(tokenEstimate * 4), category, tokenEstimate, redactionCount: 0, redactedTypes: [] };
+}
 
 // Test the sensitive path detection by attempting to include sensitive files
 describe("bundleContext - sensitive path handling", () => {
@@ -176,12 +182,15 @@ describe("bundleContext - token budget", () => {
   });
 
   it("respects maxTokens budget", async () => {
-    // With maxTokens=1000, explicit budget = 150 tokens
-    // small.ts (~25 tokens) should fit, large.ts (~500 tokens) should not
+    // With two-pass allocation, total demand must exceed filePool to trigger contention.
+    // small.ts (~25 tokens) + large.ts (~500 tokens) = ~525 tokens.
+    // Set maxTokens=400 so total demand (525) > filePool (400) and contention kicks in.
+    // Under contention, explicit gets 15% base = 60 tokens. Even with redistribution
+    // from empty categories, large.ts (500 tokens) won't fit alongside small.ts.
     const bundle = await bundleContext({
       projectPath: tmpDir,
       includeFiles: ["src/small.ts", "src/large.ts"],
-      maxTokens: 1000,
+      maxTokens: 400,
       includeConversation: false,
       includeDependencies: false,
       includeDependents: false,
@@ -1165,11 +1174,11 @@ describe("bundleContext - budget warnings", () => {
   });
 });
 
-describe("bundleContext - budget spillover", () => {
+describe("bundleContext - budget redistribution", () => {
   let tmpDir: string;
 
   beforeAll(() => {
-    tmpDir = createTempDir("bundler-spillover");
+    tmpDir = createTempDir("bundler-redistribution");
     createProjectStructure(tmpDir, {
       "src/a.ts": "a".repeat(200), // ~50 tokens
       "src/b.ts": "b".repeat(200), // ~50 tokens
@@ -1181,14 +1190,12 @@ describe("bundleContext - budget spillover", () => {
     cleanupTempDir(tmpDir);
   });
 
-  it("uses spillover from underutilized categories", async () => {
-    // With a larger budget, spillover should help fit more files
-    // Base explicit budget = 15% of 2000 = 300 tokens
-    // Each file is ~50 tokens, so all 3 should fit (150 tokens total)
+  it("includes all files when total demand fits in budget (fast path)", async () => {
+    // Total demand ~150 tokens, budget 2000 → all fit via fast path
     const bundle = await bundleContext({
       projectPath: tmpDir,
       includeFiles: ["src/a.ts", "src/b.ts", "src/c.ts"],
-      maxTokens: 2000, // Larger budget so explicit gets 300 tokens base
+      maxTokens: 2000,
       includeConversation: false,
       includeDependencies: false,
       includeDependents: false,
@@ -1196,22 +1203,19 @@ describe("bundleContext - budget spillover", () => {
       includeTypes: false,
     });
 
-    // All three ~50 token files should fit within explicit budget
     expect(bundle.files.length).toBe(3);
-    // All should be in explicit category
     expect(bundle.files.every((f) => f.category === "explicit")).toBe(true);
-    // No files should be omitted for budget
     expect(bundle.omittedFiles.filter((f) => f.reason === "budget_exceeded")).toHaveLength(0);
   });
 
-  it("spills over unused budget to later categories", async () => {
-    // Create a scenario where explicit uses nothing but session has files
-    // This requires mocking session context, which is complex
-    // Instead, verify that with tight budgets, files get omitted as expected
+  it("redistributes budget from empty categories to busy ones", async () => {
+    // With maxTokens=100, explicit base = 15 tokens.
+    // But all other categories are empty, so the full 100 token pool
+    // gets redistributed to explicit. File is ~50 tokens → fits.
     const bundle = await bundleContext({
       projectPath: tmpDir,
       includeFiles: ["src/a.ts"],
-      maxTokens: 100, // Tight budget: explicit gets 15 tokens, file is ~50
+      maxTokens: 100,
       includeConversation: false,
       includeDependencies: false,
       includeDependents: false,
@@ -1219,17 +1223,112 @@ describe("bundleContext - budget spillover", () => {
       includeTypes: false,
     });
 
-    // With very tight budget, file might be omitted
-    // But spillover from all unused categories should help
-    // Total spillover = 85 tokens (100 - 15 explicit)
-    // With 15 + half of spillover available, should fit ~50 token file
-    // Actually: 15 base + spillover starts at 0, so only 15 tokens available initially
-    // The file won't fit, demonstrating budget constraint works
-    if (bundle.files.length === 0) {
-      expect(bundle.omittedFiles.some((f) => f.reason === "budget_exceeded")).toBe(true);
-    } else {
-      // If spillover worked, file was included
-      expect(bundle.files[0].category).toBe("explicit");
+    // With two-pass allocation, the ~50 token file fits in the 100 token pool
+    expect(bundle.files.length).toBe(1);
+    expect(bundle.files[0].category).toBe("explicit");
+  });
+});
+
+describe("allocateBudget - unit tests", () => {
+  it("all-fit fast path: includes everything when demand < pool", () => {
+    const candidates: CategoryCandidates[] = [
+      { category: "explicit", files: [candidate("/p/a.ts", "explicit", 100)], totalDemand: 100 },
+      { category: "session", files: [candidate("/p/b.ts", "session", 200)], totalDemand: 200 },
+      { category: "test", files: [candidate("/p/c.ts", "test", 50)], totalDemand: 50 },
+    ];
+
+    const result = allocateBudget(candidates, 1000, BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER);
+
+    expect(result.included).toHaveLength(3);
+    expect(result.omitted).toHaveLength(0);
+    expect(result.categoryTokens.explicit).toBe(100);
+    expect(result.categoryTokens.session).toBe(200);
+    expect(result.categoryTokens.test).toBe(50);
+  });
+
+  it("single-round redistribution: surplus categories donate to deficit", () => {
+    const candidates: CategoryCandidates[] = [
+      { category: "explicit", files: [candidate("/p/big.ts", "explicit", 800)], totalDemand: 800 },
+      { category: "test", files: [candidate("/p/small.ts", "test", 50)], totalDemand: 50 },
+    ];
+
+    const result = allocateBudget(candidates, 1000, BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER);
+
+    expect(result.included).toHaveLength(2);
+    expect(result.omitted).toHaveLength(0);
+  });
+
+  it("contention: omits files when total demand exceeds pool", () => {
+    const candidates: CategoryCandidates[] = [
+      {
+        category: "explicit",
+        files: [candidate("/p/a.ts", "explicit", 60), candidate("/p/b.ts", "explicit", 90)],
+        totalDemand: 150,
+      },
+    ];
+
+    const result = allocateBudget(candidates, 100, BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER);
+
+    expect(result.included).toHaveLength(1);
+    expect(result.included[0].path).toBe("/p/a.ts");
+    expect(result.omitted).toHaveLength(1);
+    expect(result.omitted[0].path).toBe("/p/b.ts");
+    expect(result.omitted[0].reason).toBe("budget_exceeded");
+  });
+
+  it("non-explicit/session categories sort smallest-first under contention", () => {
+    const candidates: CategoryCandidates[] = [
+      {
+        category: "dependency",
+        files: [candidate("/p/big.ts", "dependency", 80), candidate("/p/small.ts", "dependency", 10)],
+        totalDemand: 90,
+      },
+      { category: "explicit", files: [candidate("/p/e.ts", "explicit", 50)], totalDemand: 50 },
+    ];
+
+    const result = allocateBudget(candidates, 80, BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER);
+
+    const depIncluded = result.included.filter((f) => f.category === "dependency");
+    if (depIncluded.length > 0) {
+      expect(depIncluded[0].path).toBe("/p/small.ts");
     }
+  });
+
+  it("exact-fit edge case: file exactly uses remaining budget", () => {
+    const candidates: CategoryCandidates[] = [
+      { category: "explicit", files: [candidate("/p/exact.ts", "explicit", 100)], totalDemand: 100 },
+    ];
+
+    const result = allocateBudget(candidates, 100, BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER);
+
+    expect(result.included).toHaveLength(1);
+    expect(result.omitted).toHaveLength(0);
+  });
+
+  it("remainder fill: rescues files that exceed category budget but fit globally", () => {
+    const candidates: CategoryCandidates[] = [
+      { category: "explicit", files: [candidate("/p/a.ts", "explicit", 60)], totalDemand: 60 },
+      { category: "session", files: [candidate("/p/b.ts", "session", 40)], totalDemand: 40 },
+    ];
+
+    const result = allocateBudget(candidates, 100, BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER);
+
+    expect(result.included).toHaveLength(2);
+    expect(result.omitted).toHaveLength(0);
+  });
+
+  it("remainder fill: respects priority order when rescuing", () => {
+    const candidates: CategoryCandidates[] = [
+      { category: "explicit", files: [candidate("/p/exp.ts", "explicit", 25)], totalDemand: 25 },
+      { category: "session", files: [candidate("/p/sess.ts", "session", 30)], totalDemand: 30 },
+      { category: "type", files: [candidate("/p/type.ts", "type", 35)], totalDemand: 35 },
+    ];
+
+    const result = allocateBudget(candidates, 70, BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER);
+
+    expect(result.included.some((f) => f.path === "/p/exp.ts")).toBe(true);
+    expect(result.included.some((f) => f.path === "/p/sess.ts")).toBe(true);
+    const totalIncluded = result.included.reduce((sum, f) => sum + f.tokenEstimate, 0);
+    expect(totalIncluded).toBeLessThanOrEqual(70);
   });
 });
