@@ -279,8 +279,8 @@ claude mcp add second-opinion \
 |----------|---------|-------------|
 | `GEMINI_API_KEY` | — | API key for Google Gemini |
 | `OPENAI_API_KEY` | — | API key for OpenAI |
-| `GEMINI_MODEL` | `gemini-3-flash-preview` | Gemini model to use |
-| `OPENAI_MODEL` | `gpt-5.2` | OpenAI model to use |
+| `GEMINI_MODEL` | `gemini-pro-latest` | Gemini model to use |
+| `OPENAI_MODEL` | `gpt-5.5` | OpenAI model to use |
 | `DEFAULT_PROVIDER` | `consensus` | Default provider (`gemini`, `openai`, or `consensus`) |
 | `MAX_CONTEXT_TOKENS` | `200000` | Maximum tokens for context |
 | `MAX_OUTPUT_TOKENS` | `32768` | Maximum tokens for reviewer's response |
@@ -298,8 +298,8 @@ Create `~/.config/second-opinion/config.json`:
   "geminiApiKey": "your-key",
   "openaiApiKey": "your-key",
   "defaultProvider": "consensus",
-  "geminiModel": "gemini-3-flash-preview",
-  "openaiModel": "gpt-5.2",
+  "geminiModel": "gemini-pro-latest",
+  "openaiModel": "gpt-5.5",
   "maxContextTokens": 200000,
   "maxOutputTokens": 32768,
   "temperature": 0.3,

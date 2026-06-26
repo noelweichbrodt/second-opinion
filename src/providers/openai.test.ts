@@ -325,4 +325,49 @@ describe("OpenAIProvider", () => {
     const callArgs = mockCreate.mock.calls[0][0];
     expect(callArgs.temperature).toBe(0);
   });
+
+  it("retries without temperature when the model rejects it, then caches the model", async () => {
+    // Unique model name so the module-level cache doesn't affect other tests.
+    const reasoningProvider = new OpenAIProvider("key", "reasoning-temp-averse");
+    const tempError = Object.assign(
+      new Error(
+        "Unsupported value: 'temperature' does not support 0.3 with this model. Only the default (1) value is supported."
+      ),
+      { param: "temperature" }
+    );
+
+    const request: ReviewRequest = { instructions: "Guidelines", context: "Code" };
+
+    // First review: initial call rejects on temperature, retry (no temp) succeeds.
+    mockCreate
+      .mockRejectedValueOnce(tempError)
+      .mockResolvedValueOnce({ choices: [{ message: { content: "ok" } }], usage: null });
+
+    await reasoningProvider.review(request);
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(mockCreate.mock.calls[0][0].temperature).toBe(0.3); // attempted with temperature
+    expect("temperature" in mockCreate.mock.calls[1][0]).toBe(false); // retried without it
+
+    // Second review on the same model: temperature skipped up front (single call).
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "ok2" } }],
+      usage: null,
+    });
+
+    await reasoningProvider.review(request);
+
+    expect(mockCreate).toHaveBeenCalledTimes(3);
+    expect("temperature" in mockCreate.mock.calls[2][0]).toBe(false); // proactively omitted
+  });
+
+  it("rethrows non-temperature errors without retrying", async () => {
+    const otherProvider = new OpenAIProvider("key", "some-model");
+    mockCreate.mockRejectedValueOnce(new Error("rate limit exceeded"));
+
+    const request: ReviewRequest = { instructions: "Guidelines", context: "Code" };
+
+    await expect(otherProvider.review(request)).rejects.toThrow("rate limit exceeded");
+    expect(mockCreate).toHaveBeenCalledTimes(1); // no retry
+  });
 });

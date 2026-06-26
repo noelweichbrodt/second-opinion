@@ -73,8 +73,8 @@ describe("loadConfig", () => {
     const config = loadConfig();
 
     expect(config.defaultProvider).toBe("consensus");
-    expect(config.geminiModel).toBe("gemini-3-flash-preview");
-    expect(config.openaiModel).toBe("gpt-5.2");
+    expect(config.geminiModel).toBe("gemini-pro-latest");
+    expect(config.openaiModel).toBe("gpt-5.5");
     expect(config.maxContextTokens).toBe(200000);
     expect(config.reviewsDir).toBe("second-opinions");
   });
