@@ -44,21 +44,44 @@ When the user invokes the skill:
 1. Parse the input:
    - First word may be provider (`gemini`, `openai`, or `consensus`)
    - Words with `=` are options (e.g., `temp=0.8`, `maxInputTokens=50000`)
-   - Remaining text is the task (if any)
+   - Remaining text is the custom instruction (if any)
    - If no provider specified, use default (consensus)
+
+   **Classify the custom instruction's intent (default: augment):**
+   - **Augment** (almost always): the text is extra focus areas or notes to address *as part of* the standard review — e.g. "evaluate for unnecessary complexity," "check the error handling," "security audit," "verify the previous review's issues are fixed." The built-in methodology still runs in full; these are additional points, not a replacement.
+   - **Replace** (rare): the text asks for a genuinely different deliverable that is *not* a code review — e.g. "write documentation," "write a migration guide," "summarize the architecture for a new hire." Only here does the methodology step aside.
+   - When unsure, choose **augment**. Never let a custom instruction suppress the methodology — the external models will happily coast on a narrow focus if you let them.
 
 2. Derive a session name from the work done (e.g., "add-user-auth", "fix-login-bug")
 
-3. Call the `second_opinion` MCP tool:
+3. Call the `second_opinion` MCP tool, routing by the intent classified in step 1:
+
+   **Augment** — omit `task` (this keeps the methodology authoritative) and pass the points via `focusAreas`. They render as "Specific Focus Areas for This Review" *inside* the methodology, so the full review still runs. Split multiple asks into separate bullets so each one gets addressed:
 
 ```json
 {
-  "provider": "gemini",
+  "provider": "consensus",
   "projectPath": "/absolute/path/to/project",
-  "sessionName": "descriptive-session-name",
-  "task": "Evaluate this codebase for unnecessary complexity..."
+  "sessionName": "error-handling-review",
+  "focusAreas": [
+    "Error handling consistency across the changed files",
+    "Gaps where errors are swallowed or never surfaced"
+  ]
 }
 ```
+
+   **Replace** — set `task` (the methodology drops to reference material and the task drives):
+
+```json
+{
+  "provider": "openai",
+  "projectPath": "/absolute/path/to/project",
+  "sessionName": "api-docs",
+  "task": "Write reference documentation for the changes in this session."
+}
+```
+
+   Because an augmented review has no `task`, encode the focus in `sessionName` so the output filename stays descriptive. File-reference handling (`includeFiles` / `allowExternalFiles`) is unchanged and applies to both modes.
 
 4. Report the results:
    - Path to the output file
@@ -81,20 +104,20 @@ Claude: Consensus review complete! Written to second-opinions/add-user-auth.cons
 - Key findings: [brief summary]
 ```
 
-**Custom task:**
+**Custom task (augment — the common case):**
 ```
 User: /second-opinion Evaluate the error handling strategy. Are errors handled consistently? Are there gaps?
 
-Claude: I'll get a consensus evaluation from both Gemini and OpenAI.
-[Calls second_opinion tool with provider: "consensus", task]
-Claude: Analysis complete! Written to second-opinions/add-user-auth.consensus.evaluate-error-handling.md
+Claude: I'll run the standard review with error handling as an added focus, via consensus.
+[Classifies as augment → calls second_opinion with provider: "consensus", NO task, focusAreas: ["Error handling consistency", "Gaps where errors are swallowed or never surfaced"], sessionName: "error-handling"]
+Claude: Analysis complete! Written to second-opinions/error-handling.consensus.review.md
 ```
 
 **With specific provider:**
 ```
 User: /second-opinion openai Write documentation for the changes made in this session.
 
-Claude: I'll ask GPT to write documentation.
+Claude: That's a documentation deliverable, not a review, so I'll classify it as replace and have GPT write it.
 [Calls second_opinion tool with provider: "openai", task: "Write documentation..."]
 ```
 
@@ -122,11 +145,13 @@ Claude then synthesizes the results using its full session context into the `## 
 following the unified review framework:
 
 1. **Summary**: Synthesize both reviewers' overall assessments. Note agreement/disagreement.
-2. **Findings**: Merge and deduplicate findings. Use severity labels (`[BLOCKING]`, `[IMPORTANT]`, `[NIT]`, `[SUGGESTION]`, `[PRAISE]`). Note which reviewer(s) flagged each. Higher confidence when both agree. When a diff is provided, only include diff-related issues.
+2. **Findings**: Merge and deduplicate findings. Use severity labels (`[BLOCKING]`, `[IMPORTANT]`, `[NIT]`, `[SUGGESTION]`, `[PRAISE]`). Note which reviewer(s) flagged each. Higher confidence when both agree — **except for defensive findings**, where two reviewers reaching for the same local guard is not extra confidence (see *Altitude triage* below). When a diff is provided, only include diff-related issues.
 3. **Pre-existing Issues**: (When a diff was provided) Issues NOT in the diff. Note which reviewer(s) flagged each. Omit if no diff or no pre-existing issues.
 4. **Questions**: Unresolved questions from either review.
 5. **Upstream/Downstream Opportunities**: Merge architectural suggestions.
 6. **What's Done Well**: Merge praise with `[PRAISE]` labels.
+
+**Altitude triage (defensive findings):** You have the full session and codebase the external reviewers lacked, so judge reachability yourself. For any finding whose fix is a guard / check / validation: if the bad input can't reach the site (trusted internal callers, already-validated data), demote it to `[NIT]`/`[SUGGESTION]` with a one-line reachability note rather than letting it read as blocking — don't drop it. When defense is genuinely warranted, promote the highest-altitude fix — make the bad state unrepresentable (type/contract) or validate once at the trust boundary — over scattered local patches. Never merge two low-altitude patches into one finding; reframe them as the single contract or architecture change that removes the whole class.
 
 This approach leverages Claude's richer context (full conversation history, codebase understanding)
 to produce a more informed synthesis than either external model could alone.
@@ -153,7 +178,7 @@ Claude: I'll include the previous review and ask Gemini to evaluate the changes.
 |-----------|----------|---------|-------------|
 | provider | Yes | - | `"gemini"`, `"openai"`, or `"consensus"` (calls both in parallel) |
 | projectPath | Yes | - | Absolute path to project |
-| task | No | - | Custom task/prompt for the LLM (defaults to code review) |
+| task | No | - | **Replace-mode** — a non-review deliverable (e.g. docs, migration guide). Drives the prompt and demotes the methodology to reference. For focused reviews, omit this and use `focusAreas`. |
 | sessionId | No | latest | Claude Code session ID |
 | sessionName | No | auto | Name for output file |
 | includeFiles | No | - | Additional files/folders to include (supports ~ and relative paths) |
@@ -167,7 +192,7 @@ Claude: I'll include the previous review and ask Gemini to evaluate the changes.
 | maxInputTokens | No | 200000 | Context token budget |
 | maxOutputTokens | No | 32768 | Max tokens for reviewer's response |
 | temperature | No | 0.3 | LLM temperature (0-1). Lower = more focused, higher = more creative |
-| focusAreas | No | - | Areas to focus on (for code reviews) |
+| focusAreas | No | - | **Augment-mode** — extra points to address within the standard review; renders inside the methodology. The channel for focused custom instructions. |
 
 ### Inline Option Syntax
 
@@ -292,7 +317,7 @@ Set environment variables with `-e` when adding the MCP server:
 ```bash
 claude mcp add second-opinion \
   -e GEMINI_API_KEY="$(cat ~/.secrets/gemini-key)" \
-  -e GEMINI_MODEL="gemini-2.0-flash-exp" \
+  -e GEMINI_MODEL="gemini-pro-latest" \
   -- npx second-opinion-mcp
 ```
 
@@ -300,8 +325,8 @@ claude mcp add second-opinion \
 |----------|---------|-------------|
 | GEMINI_API_KEY | - | API key for Gemini |
 | OPENAI_API_KEY | - | API key for OpenAI |
-| GEMINI_MODEL | gemini-2.0-flash-exp | Gemini model to use |
-| OPENAI_MODEL | gpt-4o | OpenAI model to use |
+| GEMINI_MODEL | gemini-pro-latest | Gemini model to use |
+| OPENAI_MODEL | gpt-5.5 | OpenAI model to use |
 | DEFAULT_PROVIDER | consensus | Default provider if not specified (falls back to single provider if only one key configured) |
 | MAX_CONTEXT_TOKENS | 100000 | Token budget for context |
 | MAX_OUTPUT_TOKENS | 32768 | Max tokens for reviewer's response |
