@@ -51,14 +51,92 @@ Now examine the code for:
 Before finalizing your findings, interrogate each one:
 
 1. Form each potential finding as a question:
-   "What happens if `items` is empty at `api/handler.ts:34`?"
+   "What happens if `items` is empty at `api/handler.ts:34` — and can it actually
+   be empty here, given who calls it and which side of a trust boundary it sits on?"
 2. Answer by searching the provided code for evidence
 3. Based on evidence:
    - **Confirmed** → include as a finding with the evidence
    - **Ambiguous** → include as a Question (not a finding)
    - **Contradicted** → discard
+   - **Defensive** (the fix would be a guard / check / validation) → run it through
+     *Triage Defensive Findings to the Right Altitude* (below) before reporting
 
 This forces grounding. Do not skip this step.
+
+---
+
+## Triage Defensive Findings to the Right Altitude
+
+Before reporting any finding whose fix is "add a check / guard / validation /
+try-catch," run it through this triage. Fix the *cause* at the right layer — don't
+scatter point-checks against inputs that can't occur. One level of rigor is enough;
+we are not gold-plating the interface.
+
+### Step 1 — Establish reachability
+
+A defensive finding is fully load-bearing only if the bad input can actually arrive
+at that point.
+
+- **Who calls this, and what do they pass?** Trace the actual callers in the
+  provided context — don't assume an arbitrary caller.
+- **Which side of a trust boundary is this?**
+  - *Trust boundary* (network, user input, deserialized data, env vars, file/disk
+    contents, third-party or plugin code, persisted data crossing a deploy):
+    untrusted — validation belongs here.
+  - *Internal* (already validated upstream, produced by your own typed code, one
+    internal service calling another): trusted — a guard here is redundancy, not
+    robustness.
+- **Verdict:**
+  - **Cannot currently reach here** → do not report as [BLOCKING] or [IMPORTANT].
+    Demote to [NIT] or [SUGGESTION] and prefix it with
+    `(reachability: not currently reachable — <why>)`. Note the undefended
+    invariant; do not prescribe a guard as the fix. Keep it visible, not loud.
+  - **Reachable only across a trust boundary** → validate **once at that boundary**,
+    not at every inner layer. Continue to Step 2.
+
+### Step 2 — Fix at the right altitude
+
+When defense IS warranted, prefer the highest rung that applies. Drop to a lower
+rung only when you can state why the rung above doesn't work.
+
+1. **Make it unrepresentable** — change the type or contract so the bad state can't
+   be constructed (non-nullable types, sum types / enums over stringly-typed flags,
+   required fields, branded types, "parse, don't validate"). Eliminates the whole
+   class and every downstream check for it.
+2. **Fail once, at the boundary** — validate at the trust boundary and convert the
+   input into a trusted type, so inner layers receive only valid data and need no
+   checks. One chokepoint instead of N scattered guards.
+3. **Local guard** — add the check at this site. Justified only when 1 and 2 are
+   rejected (a genuine external boundary that can't be typed away, or a contract
+   refactor disproportionate to the change under review).
+4. **Accept and document** — state the invariant in a comment or assertion and move
+   on.
+
+### Rigor budget
+
+Default to **one** layer of validation per trust boundary. Do not request
+defense-in-depth — re-validating trusted internal data, guarding against your own
+correct code — unless a stated threat model earns it (a security boundary,
+persisted/versioned data, genuinely untrusted plugin input). Redundant internal
+checks are a finding *against* the code: they hide where the real boundary is.
+
+Universal trust boundaries (validate here): network / API request handlers, user
+input, deserialization (JSON, protobuf, etc.), environment variables, file/disk
+contents, third-party or plugin code, persisted data crossing a deploy. Trusted (no
+re-validation): data already validated at one of those boundaries, and values
+produced by your own typed code. Refine these lists for the specific environment in
+a project-local `second-opinion.md`.
+
+### How to report a defensive finding
+
+Lead with the altitude, not the patch. If your `Fix:` reads "add a check for X,"
+you've likely stopped one rung too low — state why rungs 1 and 2 don't apply.
+
+> **[IMPORTANT]** `repository.ts:42` returns `User | null`, forcing null checks in
+> all three callers (`handler.ts:78`, ...).
+> **Fix (altitude 1):** make `findUser` return `User` and signal the genuinely
+> missing case once (throw / `Result`) at the single point it can occur, so callers
+> stop re-checking. Prefer this over adding a fourth null guard.
 
 ---
 
@@ -71,6 +149,9 @@ Use these labels for all findings. Bold text, no emojis.
 - **[NIT]** — Nice to have, not blocking. At minimum a file reference.
 - **[SUGGESTION]** — Alternative approach to consider. Include rationale.
 - **[PRAISE]** — Good work worth calling out. Reference specific code.
+
+A finding whose triggering condition is not currently reachable caps at **[NIT]** /
+**[SUGGESTION]** — see *Triage Defensive Findings to the Right Altitude*.
 
 ## Evidence Requirements
 
