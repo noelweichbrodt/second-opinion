@@ -126,3 +126,5 @@ Deferred (not this cycle):
 
 - **R1/R3** (system-prompt nucleus, Codex header trim): ~216-260 tokens per review — roughly 0.3% of a typical bundle — against a required blind quality-evaluation apparatus. The steering redundancy is deliberately kept; SOTA-first.
 - **Methodology template consolidation** (the optional ≤11,300 B variant of R1): same reasoning.
+
+> **Resolved 2026-07-27 — read the projections above as superseded for R1/R3.** The blind evaluation ran (`plans/r1-r3-blind-eval.md`, results in `plans/r1-r3-eval-results.md`) and **R1 shipped; R3 did not.** Two corrections to the numbers in this document: the evaluated R1 candidate was 390 B rather than the 294 B proposed here, so it saves 768 B rather than 864 B; and R3's 174 B is not realized at all. The "with gated candidate(s)" column therefore overstates — the per-review Codex row should read R1 + R4, not R1 + R3 + R4. Methodology-template consolidation remains deferred and unevaluated.

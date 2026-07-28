@@ -610,10 +610,10 @@ describe("executeReview - Codex handoff", () => {
     expect(fs.existsSync(result.egressManifestFile)).toBe(true);
 
     const prompt = fs.readFileSync(result.promptFile, "utf-8");
-    expect(prompt).toContain("Codex Review Handoff");
+    expect(prompt).toContain("Codex External Review Handoff");
     expect(prompt).toContain("read-only task");
     expect(prompt).toContain("Do not modify any files");
-    expect(prompt.indexOf("Codex Review Handoff")).toBeLessThan(
+    expect(prompt.indexOf("Codex External Review Handoff")).toBeLessThan(
       prompt.indexOf("<system-instructions>")
     );
     expect(prompt.indexOf("<system-instructions>")).toBeLessThan(
@@ -1076,7 +1076,7 @@ describe("executeReview - replacement task prompt", () => {
     expect(prompt).toContain("# Review Instructions");
     expect(prompt).toContain("<language-hints>");
     expect(prompt).toContain("Report only issues you can verify");
-    expect(prompt).toContain("# Codex Review Handoff");
+    expect(prompt).toContain("# Codex External Review Handoff");
     expect(result.rescueCommand).toContain("review prompt");
     expect(result.rescueCommand).toContain("full review markdown");
   });

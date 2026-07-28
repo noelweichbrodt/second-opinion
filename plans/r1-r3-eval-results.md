@@ -2,7 +2,7 @@
 
 Executes `plans/r1-r3-blind-eval.md`, which decides whether the two deferred prompt trims from `plans/token-audit.md` can land without degrading review quality. The audit's acceptance criteria govern: blind baseline-vs-candidate evaluation, **no quality metric may regress, token savings alone cannot win**, and each candidate is evaluated independently so regressions stay attributable.
 
-**Outcome: both candidates land; the combined-arm interaction check did not pass and is the top follow-up.** R1 (review system-prompt nucleus) and R3 (Codex review-handoff header) each pass the decision rule independently on every engine they touch, with zero fabrications introduced and no BLOCKING-floor defect lost anywhere in the eval. Arm D — both trims applied together, which is the configuration now in the tree — fails the same rule on two metrics. Read [Codex — R1+R3 (arm D)](#codex--r1r3-arm-d-interaction-check--fail) before relying on this result.
+**Outcome: R1 ships alone. R3 passed on its own but was reverted rather than defended.** R1 (review system-prompt nucleus) and R3 (Codex review-handoff header) each pass the decision rule independently on every engine they touch, with zero fabrications introduced and no BLOCKING-floor defect lost anywhere in the eval. Arm D — both trims applied together — fails the same rule on two metrics, and the eval's one-rep design cannot say whether that is a real interaction or sampling noise. Rather than spend a second eval resolving it, the operator shipped arm B: the configuration that passed, unmodified. See [Shipped configuration](#shipped-configuration).
 
 ## What was measured
 
@@ -213,7 +213,9 @@ Fabrications: A=0, D=0. Two rule-(a) violations.
 
 **Interpretation, stated conservatively.** Both regressions are single-observation differences. The plan specifies one rep per cell, and unlike the Gemini arms — which ran at temperature 0 and were near-deterministic — the Codex arms have no temperature control and inherit `model_reasoning_effort` from the CLI, so run-to-run variance is real and unmeasured. Two of the three arms that "should" behave alike on the `fx-sql-injection` trap did, and D did not; that is as consistent with sampling noise as with a genuine interaction. **The eval as designed cannot distinguish the two.** What can be said without qualification: arm D introduced no fabrications, lost no BLOCKING-floor defect, held clean-fixture honesty, and kept format compliance — the failure is confined to two half-point deductions on secondary metrics.
 
-**Consequence for the landing.** R1 and R3 landed on the per-candidate rule, which is what the plan and the audit's acceptance criteria specify. That is the letter of the protocol and it was followed. The honest caveat is that the shipped configuration is D, and D has not cleared the same bar its two components did. Recommended follow-up, in order: re-run arm D and arm A at 3+ reps per fixture to separate noise from interaction before treating the combined configuration as validated; if the `fx-swallowed-error` evidence miss reproduces, that is a real R1×R3 interaction and R3 should be reconsidered on its own (R1 carries 87% of the savings).
+**Consequence for the landing.** R1 and R3 landed on the per-candidate rule, which is what the plan and the audit's acceptance criteria specify. That is the letter of the protocol and it was followed. The honest caveat was that the shipped configuration would then be D, which had not cleared the same bar its two components did.
+
+**How it was resolved.** By reverting R3, so that the shipped configuration is arm B — a configuration that did clear the bar. This was chosen over the alternative follow-up (re-running arms A and D at 3+ reps per fixture to separate interaction from noise) on cost: R1 carries 87% of the savings, so the re-run would have been spent defending 120 B per Codex review. See [Shipped configuration](#shipped-configuration).
 
 ## Pairwise preference (secondary)
 
@@ -232,11 +234,11 @@ R1 is a dead heat on both engines — consistent with the rubric finding that it
 
 ## Decisions
 
-| Candidate | Gemini | Codex | Decision |
-|---|---|---|---|
-| **R1** — review system-prompt nucleus | PASS | PASS | **LANDS** |
-| **R3** — Codex review-handoff header | n/a (header never reaches Gemini) | PASS | **LANDS** |
-| R1+R3 combined (arm D) | n/a | **FAIL** | advisory; not a candidate — see follow-up |
+| Candidate | Gemini | Codex | Rule verdict | Shipped |
+|---|---|---|---|---|
+| **R1** — review system-prompt nucleus | PASS | PASS | **LANDS** | yes |
+| **R3** — Codex review-handoff header | n/a (header never reaches Gemini) | PASS | **LANDS** | no — reverted |
+| R1+R3 combined (arm D) | n/a | **FAIL** | advisory; not a candidate | no |
 
 Against the four conditions, for both R1 and R3:
 
@@ -247,7 +249,20 @@ Against the four conditions, for both R1 and R3:
 
 Ties go to the savings per the plan, which is what carries R1 on Gemini (tied on seven of eight metrics, +1 on trap).
 
-**What this does and does not license.** It licenses landing each trim on the evidence that it, individually, does not degrade review quality. It does not establish that the combined configuration is safe — arm D says otherwise, on two half-point secondary deductions that the eval's one-rep design cannot separate from noise. The trims landed anyway because that is the rule the audit and the plan set in advance, and rewriting the rule after seeing the result would defeat the point of fixing it beforehand. The open risk is recorded above and in the narrative.
+**What this does and does not license.** It licenses landing each trim on the evidence that it, individually, does not degrade review quality. It does not establish that the combined configuration is safe — arm D says otherwise, on two half-point secondary deductions that the eval's one-rep design cannot separate from noise.
+
+## Shipped configuration
+
+Both trims landed initially, per the per-candidate rule the audit and the plan fixed in advance. The operator then reverted R3, leaving **arm B — R1 alone — as the shipped configuration.**
+
+The reasoning is economic rather than evidentiary. Nothing here says R3 is harmful; it passed its own arm and was the single strongest signal in the eval on pairwise preference (6–2). But the only configuration that both passed the rule *and* is what actually runs is arm B, and reaching that state costs one revert. Resolving arm D properly costs 16+ more Codex runs plus grading — against 120 B per Codex review, which R3 contributes. The last eval spent 2.8M subagent tokens; a re-run to defend R3 would likely cost more than R3 will ever save.
+
+So the tree now carries:
+
+- **R1 — shipped.** `getSystemPrompt(false)` is the 390 B nucleus, pinned by string equality to the text arm B scored. −768 B per review on both engines.
+- **R3 — reverted.** `CODEX_REVIEW_HANDOFF_HEADER` is back to the 258 B baseline, byte-exact, with a comment recording why the trim is not applied.
+
+This retires the arm-D risk instead of managing it: the combined configuration is no longer running anywhere, so the two unexplained half-point deductions can no longer affect a real review. If R3's 120 B becomes worth having later, it needs a fresh multi-rep eval against the current baseline — not a revival of this result.
 
 ## Cost
 
@@ -265,10 +280,10 @@ Not included: 16 Gemini API calls at temperature 0, and 32 Codex background runs
 
 ## Landing
 
-Applied after both candidates passed, per the plan's conditional landing phase:
+Applied after both candidates passed, per the plan's conditional landing phase. R3 was reverted afterwards — see [Shipped configuration](#shipped-configuration) — so the second bullet describes a state the tree no longer carries.
 
-- `src/providers/base.ts` — review-branch return value of `getSystemPrompt` replaced with the frozen R1 text; the orphaned `VERIFICATION_REQUIREMENTS` constant removed. 1,158 → 390 B.
-- `src/providers/codex.ts` — `CODEX_REVIEW_HANDOFF_HEADER` replaced with the frozen R3 text. 258 → 138 B.
+- `src/providers/base.ts` — review-branch return value of `getSystemPrompt` replaced with the frozen R1 text; the orphaned `VERIFICATION_REQUIREMENTS` constant removed. 1,158 → 390 B. **Shipped.**
+- `src/providers/codex.ts` — `CODEX_REVIEW_HANDOFF_HEADER` replaced with the frozen R3 text. 258 → 138 B. **Reverted.**
 - Test expectations updated in `base.test.ts`, `codex.test.ts`, `config.test.ts` and `review.test.ts`.
 - **494 tests pass, 21 files; `npm run build` exit 0.** `templates/second-opinion.md` untouched, so no methodology re-sync was required (the installer confirmed it skipped the existing target).
 
