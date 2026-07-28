@@ -1,6 +1,6 @@
 ---
 name: second-opinion
-description: Get feedback from Gemini or Codex on your current work (0.6.0)
+description: Get feedback from Gemini or Codex on your current work (0.7.0)
 user-invocable: true
 ---
 
