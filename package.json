@@ -42,7 +42,8 @@
     "release": "release-it",
     "prepublishOnly": "npm run build",
     "postinstall": "node scripts/install-config.js",
-    "install-config": "node scripts/install-config.js"
+    "install-config": "node scripts/install-config.js",
+    "gen:template-hashes": "node scripts/gen-template-hashes.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

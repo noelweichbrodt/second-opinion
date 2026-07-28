@@ -253,17 +253,22 @@ describe("loadReviewInstructions", () => {
     // grounds that <instructions> already states them. That made these headings
     // load-bearing rather than belt-and-braces: trimming one here would leave
     // the review prompt stating it nowhere.
+    //
+    // The list lives in templates/methodology-manifest.json because the
+    // installer warns on the same anchors when it finds a customized
+    // methodology; two hand-maintained copies would drift.
+    const manifest = JSON.parse(
+      fs.readFileSync(path.resolve("templates/methodology-manifest.json"), "utf-8")
+    ) as { anchors: string[] };
     const canonical = fs.readFileSync(
       path.resolve("templates/second-opinion.md"),
       "utf-8"
     );
 
-    expect(canonical).toContain("## Approach: Phased Review");
-    expect(canonical).toContain("## Severity Labels");
-    expect(canonical).toContain("## Evidence Requirements");
-    expect(canonical).toContain("## Beyond the Diff");
-    expect(canonical).toContain("### Pre-existing Issues");
-    expect(canonical).toContain("### Questions");
+    expect(manifest.anchors.length).toBeGreaterThan(0);
+    for (const anchor of manifest.anchors) {
+      expect(canonical).toContain(anchor);
+    }
   });
 
   it("fallback with no project or global file loads the canonical template", () => {

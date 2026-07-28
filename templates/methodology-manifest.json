@@ -1,0 +1,19 @@
+{
+  "comment": "Sections the review system prompt delegates to. getSystemPrompt(false) no longer restates the phase structure, severity ladder or diff/pre-existing split, so a methodology missing one of these leaves it stated nowhere. See plans/r1-r3-eval-results.md.",
+  "anchors": [
+    "## Approach: Phased Review",
+    "## Severity Labels",
+    "## Evidence Requirements",
+    "## Beyond the Diff",
+    "### Pre-existing Issues",
+    "### Questions"
+  ],
+  "released": [
+    "7f23e48aed59c78b797714a782070ee4f25b198eedbccf383d0b2d2b899442a0",
+    "3d0cc6b7fe6d638056ab37f5ae298811393556dd41b8d8a9903a5676f830b39e",
+    "d9cf5e6964ee19e2d75579737204fcf7cf574f3ab0fb9c374dcdb8ca140a0a4b",
+    "ca935b26f457193cdb79d4aa590819c20acd15fb9b7453b6a5094e699ee79135",
+    "85e0bf0e7da2ab06cd6fd43d1b93b8a156825fcb8fbe902c9a4747273220c0fb",
+    "09637e5b42f73aad81da2eb445f72ee868730c6ff59c85aaf55f7583c4679df8"
+  ]
+}
