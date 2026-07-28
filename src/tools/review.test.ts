@@ -610,17 +610,20 @@ describe("executeReview - Codex handoff", () => {
     expect(fs.existsSync(result.egressManifestFile)).toBe(true);
 
     const prompt = fs.readFileSync(result.promptFile, "utf-8");
-    expect(prompt).toContain("Codex External Review Handoff");
+    expect(prompt).toContain("Codex Review Handoff");
     expect(prompt).toContain("read-only task");
     expect(prompt).toContain("Do not modify any files");
-    expect(prompt.indexOf("Codex External Review Handoff")).toBeLessThan(
+    expect(prompt.indexOf("Codex Review Handoff")).toBeLessThan(
       prompt.indexOf("<system-instructions>")
     );
     expect(prompt.indexOf("<system-instructions>")).toBeLessThan(
       prompt.lastIndexOf("<code-context>")
     );
+    // Anchor on the delimiter, not the bare token: the system prompt refers to
+    // "the review methodology in <instructions>", so a substring match would
+    // find that reference rather than the section it points at.
     expect(prompt.lastIndexOf("<code-context>")).toBeLessThan(
-      prompt.indexOf("<instructions>")
+      prompt.indexOf("\n<instructions>\n")
     );
 
     const review = fs.readFileSync(result.reviewFile, "utf-8");
@@ -1037,9 +1040,10 @@ describe("executeReview - replacement task prompt", () => {
     expect(prompt).not.toContain("# Review Instructions");
     expect(prompt).not.toContain("<reference-instructions>");
     expect(prompt).not.toContain("<language-hints>");
-    // Task deliverables must not inherit the review-mode verification block.
-    expect(prompt).not.toContain("Verification Requirements");
-    expect(prompt).not.toContain("QUOTE the specific code");
+    // The review nucleus, not the retired verification block: task deliverables
+    // must not inherit the review-mode anti-fabrication phrasing.
+    expect(prompt).not.toContain("Report only issues you can verify");
+    expect(prompt).not.toContain("Follow the review methodology in <instructions>");
     // Both handoff surfaces are task-framed: header and rescue command must
     // not instruct Codex to produce a review.
     expect(prompt).toContain("# Codex External Task Handoff");
@@ -1071,8 +1075,8 @@ describe("executeReview - replacement task prompt", () => {
 
     expect(prompt).toContain("# Review Instructions");
     expect(prompt).toContain("<language-hints>");
-    expect(prompt).toContain("Only report issues you can VERIFY");
-    expect(prompt).toContain("# Codex External Review Handoff");
+    expect(prompt).toContain("Report only issues you can verify");
+    expect(prompt).toContain("# Codex Review Handoff");
     expect(result.rescueCommand).toContain("review prompt");
     expect(result.rescueCommand).toContain("full review markdown");
   });

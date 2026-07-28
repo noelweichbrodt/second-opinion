@@ -26,24 +26,6 @@ export interface ReviewProvider {
 }
 
 /**
- * Verification instructions appended to every system prompt to prevent hallucinated claims.
- * Always included regardless of whether files were omitted — models can fabricate issues
- * even when the relevant code is in context.
- */
-const VERIFICATION_REQUIREMENTS = `
-
-## Important: Verification Requirements
-
-When reviewing, you MUST verify claims against the provided code:
-1. Only report issues you can VERIFY in the provided code
-2. For **[BLOCKING]** findings, QUOTE the specific code that demonstrates the problem
-3. If you suspect an issue but cannot find confirming code, mark it as:
-   "UNVERIFIED: [description] - could not locate confirming code"
-   and list it under Questions, not as a confirmed finding
-4. Do NOT assume code is missing or broken without evidence
-5. Search the full provided context before claiming something doesn't exist`;
-
-/**
  * Compact system prompt for replacement tasks. Non-review deliverables do not
  * carry the review methodology, so this keeps only the essentials: role,
  * grounding/no-fabrication, and upstream/downstream thinking.
@@ -61,17 +43,18 @@ export function getSystemPrompt(hasTask: boolean): string {
     return TASK_SYSTEM_PROMPT;
   }
 
-  const base =
+  // The review methodology in <instructions> already carries the phase structure,
+  // the diff/pre-existing split and the severity ladder. This nucleus keeps only
+  // what the methodology does not state: the role, and the anti-fabrication rules.
+  return (
     "You are a staff software engineer performing a code review. "
-      + "Your goal is knowledge sharing and catching real issues — not gatekeeping. "
-      + "Think in phases: understand the change, assess the architecture, analyze details, "
-      + "then interrogate your own findings before presenting them. "
-      + "Ground every finding in specific files and lines of code. "
-      + "Look beyond the immediate diff — the right fix may live upstream or downstream. "
-      + "When a git diff is provided, focus your Findings section on issues introduced by the diff. "
-      + "Report pre-existing issues separately under Pre-existing Issues.";
-
-  return base + VERIFICATION_REQUIREMENTS;
+    + "Follow the review methodology in <instructions>. "
+    + "Report only issues you can verify in the provided code. "
+    + "Quote the code for [BLOCKING] findings. "
+    + "If you suspect an issue but cannot locate confirming code, list it under Questions, "
+    + "not as a confirmed finding. "
+    + "Search the full provided context before claiming something doesn't exist."
+  );
 }
 
 /**

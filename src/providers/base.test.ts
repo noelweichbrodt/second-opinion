@@ -11,14 +11,17 @@ describe("getSystemPrompt", () => {
   it("returns review prompt when hasTask is false", () => {
     const prompt = getSystemPrompt(false);
     expect(prompt).toContain("code review");
-    expect(prompt).toContain("knowledge sharing");
-    expect(prompt).toContain("beyond");
+    expect(prompt).toContain("staff software engineer");
   });
 
-  it("encourages lateral thinking in review prompt", () => {
+  it("delegates the methodology to the instructions block", () => {
     const prompt = getSystemPrompt(false);
-    expect(prompt).toContain("staff software engineer");
-    expect(prompt).toContain("upstream or downstream");
+    expect(prompt).toContain("Follow the review methodology in <instructions>");
+    // The nucleus must not restate what the methodology already carries; that
+    // duplication is what the R1 trim removed. See plans/r1-r3-eval-results.md.
+    expect(prompt).not.toContain("Think in phases");
+    expect(prompt).not.toContain("upstream or downstream");
+    expect(prompt).not.toContain("Pre-existing Issues");
   });
 
   it("encourages lateral thinking in task prompt", () => {
@@ -27,18 +30,33 @@ describe("getSystemPrompt", () => {
     expect(prompt).toContain("upstream or downstream");
   });
 
-  it("includes phased methodology guidance in review prompt", () => {
+  it("always includes the anti-fabrication rules in review prompt", () => {
     const prompt = getSystemPrompt(false);
-    expect(prompt).toContain("phases");
-    expect(prompt).toContain("interrogate");
-    expect(prompt).toContain("Ground every finding");
+    // Verified-only findings, quoted evidence for the loudest severity, a
+    // Questions escape hatch for unconfirmed suspicions, and search-before-
+    // claiming-absence. These four survive the trim because nothing else
+    // states them.
+    expect(prompt).toContain("Report only issues you can verify");
+    expect(prompt).toContain("Quote the code for [BLOCKING] findings");
+    expect(prompt).toContain("list it under Questions");
+    expect(prompt).toContain("Search the full provided context");
   });
 
-  it("always includes verification requirements in review prompt", () => {
-    const prompt = getSystemPrompt(false);
-    expect(prompt).toContain("Verification Requirements");
-    expect(prompt).toContain("UNVERIFIED");
-    expect(prompt).toContain("QUOTE the specific code");
+  it("pins the review nucleus to the evaluated text", () => {
+    // This exact string is what the blind quality eval scored as arm B
+    // (plans/r1-r3-eval-results.md). Containment assertions alone let the old
+    // 767 B verification block be appended back with the suite still green, so
+    // the nucleus is pinned by equality: changing it invalidates the eval and
+    // must go through a fresh one.
+    expect(getSystemPrompt(false)).toBe(
+      "You are a staff software engineer performing a code review. "
+      + "Follow the review methodology in <instructions>. "
+      + "Report only issues you can verify in the provided code. "
+      + "Quote the code for [BLOCKING] findings. "
+      + "If you suspect an issue but cannot locate confirming code, list it under Questions, "
+      + "not as a confirmed finding. "
+      + "Search the full provided context before claiming something doesn't exist."
+    );
   });
 
   it("keeps grounding but drops review apparatus in the task prompt", () => {

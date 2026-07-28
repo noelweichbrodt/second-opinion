@@ -35,11 +35,11 @@ export interface CodexHandoff {
 export const CODEX_REVIEW_PLACEHOLDER =
   "<!-- Paste the verbatim /codex:rescue output below this line -->";
 
-const CODEX_REVIEW_HANDOFF_HEADER = `# Codex External Review Handoff
+// The role and the grounding rule are already stated by the system prompt spliced
+// in directly below this header, so the header carries only what that prompt does
+// not: the read-only boundary and the shape of the final message.
+const CODEX_REVIEW_HANDOFF_HEADER = `# Codex Review Handoff
 
-You are Codex acting as an external reviewer.
-
-- Ground every finding in the provided \`<code-context>\` bundle.
 - This is a read-only task. Do not modify any files.
 - Produce the complete review markdown as your final message.`;
 

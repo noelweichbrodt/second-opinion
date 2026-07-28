@@ -247,6 +247,25 @@ describe("loadReviewInstructions", () => {
     expect(packaged).toContain("Triage Defensive Findings to the Right Altitude");
   });
 
+  it("canonical template still carries everything the review nucleus delegates", () => {
+    // The R1 trim (plans/r1-r3-eval-results.md) removed the phase structure,
+    // severity ladder and diff/pre-existing split from the system prompt on the
+    // grounds that <instructions> already states them. That made these headings
+    // load-bearing rather than belt-and-braces: trimming one here would leave
+    // the review prompt stating it nowhere.
+    const canonical = fs.readFileSync(
+      path.resolve("templates/second-opinion.md"),
+      "utf-8"
+    );
+
+    expect(canonical).toContain("## Approach: Phased Review");
+    expect(canonical).toContain("## Severity Labels");
+    expect(canonical).toContain("## Evidence Requirements");
+    expect(canonical).toContain("## Beyond the Diff");
+    expect(canonical).toContain("### Pre-existing Issues");
+    expect(canonical).toContain("### Questions");
+  });
+
   it("fallback with no project or global file loads the canonical template", () => {
     // Redirect home to an empty temp dir so no developer-installed
     // ~/.config/second-opinion/second-opinion.md can satisfy the global

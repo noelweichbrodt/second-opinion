@@ -13,11 +13,15 @@ describe("composeCodexPrompt", () => {
       languageHints: "Check TypeScript narrowing.",
     });
 
-    expect(prompt).toMatch(/^# Codex External Review Handoff/);
-    expect(prompt).toContain("acting as an external reviewer");
+    expect(prompt).toMatch(/^# Codex Review Handoff/);
+    // The role and grounding rule live in the spliced system prompt below the
+    // header, not in the header itself — see the R3 trim.
     expect(prompt).toContain("staff software engineer performing a code review");
-    expect(prompt).toContain("Only report issues you can VERIFY");
-    expect(prompt).toContain("Ground every finding in the provided");
+    expect(prompt).toContain("Report only issues you can verify");
+    // …and must not creep back into the header, which would restore the ~120 B
+    // the trim removed without failing any containment assertion.
+    expect(prompt).not.toContain("acting as an external reviewer");
+    expect(prompt).not.toContain("Ground every finding in the provided");
     expect(prompt).toContain("<code-context>");
     expect(prompt).toContain("const value = 1;");
     expect(prompt).toContain("Use the project review methodology.");
