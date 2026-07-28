@@ -4,11 +4,11 @@ export interface ReviewRequest {
   task?: string;
   focusAreas?: string[];
   customPrompt?: string;
-  /** Temperature for LLM generation (0-1). Lower = more focused, higher = more creative. */
+  /** Gemini-only generation temperature (0-1); Codex handoffs ignore it. */
   temperature?: number;
   /** Language-specific pitfall hints to inject into the prompt (e.g., TypeScript gotchas). */
   languageHints?: string;
-  /** Maximum tokens for the LLM response. */
+  /** Maximum Gemini response tokens; Codex handoffs ignore it. */
   maxOutputTokens?: number;
   /** Unified git diff from the feature branch (base...HEAD). */
   branchDiff?: string;
@@ -44,12 +44,25 @@ When reviewing, you MUST verify claims against the provided code:
 5. Search the full provided context before claiming something doesn't exist`;
 
 /**
+ * Compact system prompt for replacement tasks. Non-review deliverables do not
+ * carry the review methodology, so this keeps only the essentials: role,
+ * grounding/no-fabrication, and upstream/downstream thinking.
+ */
+const TASK_SYSTEM_PROMPT =
+  "You are a staff software engineer. Complete the requested task thoroughly and provide clear, actionable output. "
+  + "Ground every claim in the provided code; if something is not present in the context, say so rather than inventing it. "
+  + "When relevant, consider whether changes upstream or downstream of the immediate scope would produce a better outcome.";
+
+/**
  * Get the system prompt based on whether a custom task is provided
  */
 export function getSystemPrompt(hasTask: boolean): string {
-  const base = hasTask
-    ? "You are a staff software engineer. Complete the requested task thoroughly and provide clear, actionable output. When relevant, consider whether changes upstream or downstream of the immediate scope would produce a better outcome."
-    : "You are a staff software engineer performing a code review. "
+  if (hasTask) {
+    return TASK_SYSTEM_PROMPT;
+  }
+
+  const base =
+    "You are a staff software engineer performing a code review. "
       + "Your goal is knowledge sharing and catching real issues — not gatekeeping. "
       + "Think in phases: understand the change, assess the architecture, analyze details, "
       + "then interrogate your own findings before presenting them. "

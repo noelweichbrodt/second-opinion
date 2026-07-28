@@ -4,11 +4,11 @@ import * as os from "os";
 import {
   parseSession,
   findLatestSession,
-  formatConversationContext,
+  distillConversationContext,
   SessionContext,
 } from "./session.js";
-import { getAllModifiedFiles, getFileDiff, getBranchDiff } from "./git.js";
-import { detectPR, formatPRMetadata, PRContext, PRDetectionResult } from "./pr.js";
+import { getAllModifiedFiles, getBranchDiff } from "./git.js";
+import { detectPR, formatPRMetadata } from "./pr.js";
 import {
   getDependencies,
   buildImportIndex,
@@ -63,9 +63,9 @@ function splitDiffByFile(diff: string): Array<{ file: string; content: string }>
 /**
  * Expand tilde in paths to home directory
  */
-function expandTilde(filePath: string): string {
+export function expandHome(filePath: string, homeDirectory: string): string {
   if (filePath.startsWith("~/")) {
-    return path.join(os.homedir(), filePath.slice(2));
+    return path.join(homeDirectory, filePath.slice(2));
   }
   return filePath;
 }
@@ -141,7 +141,7 @@ const MAX_EXPAND_DEPTH = 10;
 function expandPath(
   inputPath: string,
   projectPath: string,
-  options?: { allowExternalFiles?: boolean },
+  options?: { allowExternalFiles?: boolean; homeDirectory?: string },
   depth: number = 0
 ): { files: string[]; blocked: BlockedFile[] } {
   const result = { files: [] as string[], blocked: [] as BlockedFile[] };
@@ -152,7 +152,7 @@ function expandPath(
   }
 
   // Expand tilde
-  let expandedPath = expandTilde(inputPath);
+  let expandedPath = expandHome(inputPath, options?.homeDirectory ?? os.homedir());
 
   // Make relative paths absolute (relative to project)
   if (!path.isAbsolute(expandedPath)) {
@@ -264,6 +264,8 @@ export interface BundleOptions {
   allowExternalFiles?: boolean;
   maxTokens?: number;
   prNumber?: number;
+  /** Home directory used for `~` expansion in includeFiles. Defaults to os.homedir(); injectable so tests never touch the real home. */
+  homeDirectory?: string;
 }
 
 export interface FileEntry {
@@ -296,7 +298,7 @@ export interface OmittedFile {
 
 export interface BudgetWarning {
   severity: "high" | "medium" | "low";
-  category: FileEntry["category"];
+  category: FileEntry["category"] | "conversation";
   omittedCount: number;
   omittedTokens: number;
   message: string;
@@ -612,6 +614,7 @@ export async function bundleContext(
     allowExternalFiles = false,
     maxTokens = 100000,
     prNumber,
+    homeDirectory,
   } = options;
 
   const bundle: ContextBundle = {
@@ -647,8 +650,37 @@ export async function bundleContext(
 
   let conversationTokens = 0;
   if (includeConversation && sessionContext) {
-    bundle.conversationContext = formatConversationContext(sessionContext);
-    conversationTokens = estimateTokens(bundle.conversationContext);
+    const conversationBudget = Math.floor(
+      maxTokens * FIXED_OVERHEAD_CAPS.conversationFraction
+    );
+    const distilled = distillConversationContext(
+      sessionContext,
+      conversationBudget
+    );
+    bundle.conversationContext = distilled.text;
+    conversationTokens = distilled.finalTokens;
+
+    const reducedMessages =
+      distilled.condensedMessages +
+      distilled.outlinedMessages +
+      distilled.omittedMessages;
+    if (reducedMessages > 0) {
+      bundle.budgetWarnings.push({
+        severity: "low",
+        category: "conversation",
+        omittedCount: distilled.omittedMessages,
+        omittedTokens: Math.max(
+          0,
+          distilled.originalTokens - distilled.finalTokens
+        ),
+        message:
+          `Conversation history distilled from ~${distilled.originalTokens.toLocaleString()} ` +
+          `to ~${distilled.finalTokens.toLocaleString()} tokens ` +
+          `(${distilled.condensedMessages} condensed, ${distilled.outlinedMessages} outlined, ` +
+          `${distilled.omittedMessages} omitted). Newest turns are verbatim; ` +
+          `raise maxInputTokens to include more history.`,
+      });
+    }
   }
 
   // ─── Fixed overhead: PR metadata ───
@@ -733,6 +765,7 @@ export async function bundleContext(
     for (const inputPath of includeFiles) {
       const { files: expandedPaths, blocked } = expandPath(inputPath, projectPath, {
         allowExternalFiles,
+        homeDirectory,
       });
 
       for (const blockedFile of blocked) {
@@ -812,7 +845,8 @@ export async function bundleContext(
       const result = readFileEntry(filePath, "pr");
       const candidate = toCandidateFile(result);
       if (candidate) {
-        candidate.annotation = `Changed in PR #${prContext.number}`;
+        // No per-file annotation: the category heading and PR metadata block
+        // already carry this information.
         candidateMap.get("pr")!.push(candidate);
 
         seenPaths.add(filePath);
@@ -829,7 +863,8 @@ export async function bundleContext(
     const result = readFileEntry(filePath, "git");
     const candidate = toCandidateFile(result);
     if (candidate) {
-      candidate.annotation = "Uncommitted changes";
+      // No per-file annotation: the "Additional Git Changes" heading already
+      // says these are uncommitted.
       candidateMap.get("git")!.push(candidate);
       seenPaths.add(filePath);
       modifiedFiles.push(filePath);
@@ -1122,22 +1157,12 @@ export function formatBundleAsMarkdown(
     }
   }
 
-  // Summary
-  lines.push("---\n");
-  lines.push("## Context Summary\n");
-  lines.push(`- **Total files:** ${bundle.files.length}`);
-  lines.push(`- **Estimated tokens:** ${bundle.totalTokens.toLocaleString()}`);
-  lines.push(`- **Breakdown:**`);
-  for (const [cat, tokens] of Object.entries(bundle.categories)) {
-    if (tokens > 0) {
-      lines.push(`  - ${cat}: ${tokens.toLocaleString()} tokens`);
-    }
-  }
-
-  // Report omitted files
+  // Report omitted files. (The former "Context Summary" file/token breakdown
+  // was reviewer-facing bookkeeping with no review signal and was dropped;
+  // omissions stay because a reviewer must know what it cannot see.)
   if (bundle.omittedFiles.length > 0) {
-    lines.push("");
-    lines.push("### Omitted Files\n");
+    lines.push("---\n");
+    lines.push("## Omitted Files\n");
     lines.push(
       "The following files were not included due to token budget constraints or security restrictions:\n"
     );

@@ -32,12 +32,20 @@ export const BUDGET_ALLOCATION = {
 export type BudgetCategory = keyof typeof BUDGET_ALLOCATION;
 
 /**
- * Fixed overhead caps for non-file context (branch diff).
+ * Fixed overhead caps for non-file context (branch diff, conversation).
  * These are subtracted from the total pool before file budget allocation.
  */
 export const FIXED_OVERHEAD_CAPS = {
   branchDiffFraction: 0.15,
   branchDiffAbsoluteMax: 20000,
+  /**
+   * Conversation history above this fraction of maxTokens is distilled
+   * (newest turns verbatim, older turns condensed to excerpts, oldest
+   * outlined) so long sessions cannot crowd files out of the budget pool.
+   * 0.1 of the default 200k budget = 20k tokens; raising maxInputTokens
+   * raises the conversation budget proportionally.
+   */
+  conversationFraction: 0.1,
 } as const;
 
 /**

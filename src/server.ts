@@ -4,12 +4,69 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   SecondOpinionInputSchema,
   executeReview,
+  EgressSummary,
 } from "./tools/review.js";
 import { loadConfig } from "./config.js";
 import { getAvailableProviders } from "./providers/index.js";
+
+/**
+ * The wire inputSchema is derived from the zod schema so validation and the
+ * advertised contract cannot drift. This definition rides in every MCP
+ * session's context — keep it lean.
+ */
+export function buildToolInputSchema(): Record<string, unknown> {
+  const schema = zodToJsonSchema(SecondOpinionInputSchema, {
+    $refStrategy: "none",
+  }) as Record<string, unknown>;
+  // Converter metadata the MCP wire contract doesn't need. (Zod strips
+  // unknown keys rather than rejecting them, so additionalProperties:false
+  // would also misstate the validator's behavior.)
+  delete schema.$schema;
+  delete schema.additionalProperties;
+  return schema;
+}
+
+/**
+ * Compact egress echo for non-dry-run responses. The full path lists live in
+ * the egress manifest file; re-serializing them into every tool result cost
+ * ~2k tokens per call. Dry runs keep the complete detail — that preview is
+ * the user-consent surface.
+ */
+function leanEgress(summary: EgressSummary) {
+  return {
+    provider: summary.provider,
+    projectFilesSent: summary.projectFilesSent,
+    externalFilesSent: summary.externalFilesSent,
+    blockedFiles: summary.blockedFiles.length,
+    redactions: summary.redactions?.totalCount ?? 0,
+    prNumber: summary.prContext?.prNumber,
+  };
+}
+
+/** Non-dry-run responses are serialized compactly; dry runs stay pretty. */
+function textResult(payload: unknown, pretty = false) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(payload, null, pretty ? 2 : undefined),
+      },
+    ],
+  };
+}
+
+/**
+ * Budget reductions the caller must be able to act on ("raise
+ * maxInputTokens") — message strings only, and only when present, so the
+ * lean-response goal (I1) is preserved.
+ */
+function leanWarnings(warnings: { message: string }[]): string[] | undefined {
+  return warnings.length > 0 ? warnings.map((w) => w.message) : undefined;
+}
 
 export function createServer(): Server {
   const server = new Server(
@@ -34,112 +91,11 @@ export function createServer(): Server {
       tools: [
         {
           name: "second_opinion",
-          description: `Get an async code review from an external LLM. Available providers: ${providerList}.
-
-This tool:
-1. Reads context from your Claude Code session (files read/edited, conversation)
-2. Analyzes dependencies, dependents, tests, and type definitions
-3. Sends the bundled context to Gemini or GPT for review
-4. Writes the review to a markdown file in your project
-
-The reviewer sees the same context Claude had, plus related code for full understanding.`,
-          inputSchema: {
-            type: "object",
-            properties: {
-              provider: {
-                type: "string",
-                enum: ["gemini", "openai", "consensus"],
-                description:
-                  "Which LLM to use. 'consensus' calls both in parallel (falls back to single provider if only one key configured).",
-              },
-              projectPath: {
-                type: "string",
-                description: "Absolute path to the project being reviewed",
-              },
-              task: {
-                type: "string",
-                description:
-                  "Task or prompt for the LLM. When omitted, defaults to code review.",
-              },
-              sessionId: {
-                type: "string",
-                description: "Claude Code session ID (defaults to most recent)",
-              },
-              temperature: {
-                type: "number",
-                description:
-                  "Temperature for LLM generation (0-1). Lower = more focused, higher = more creative. Defaults to 0.3.",
-              },
-              includeConversation: {
-                type: "boolean",
-                default: true,
-                description: "Include conversation context from Claude session",
-              },
-              includeDependencies: {
-                type: "boolean",
-                default: true,
-                description: "Include files imported by modified files",
-              },
-              includeDependents: {
-                type: "boolean",
-                default: true,
-                description: "Include files that import modified files",
-              },
-              includeTests: {
-                type: "boolean",
-                default: true,
-                description: "Include corresponding test files",
-              },
-              includeTypes: {
-                type: "boolean",
-                default: true,
-                description: "Include referenced type definitions",
-              },
-              maxInputTokens: {
-                type: "number",
-                default: 100000,
-                description: "Maximum tokens for context sent to reviewer",
-              },
-              maxOutputTokens: {
-                type: "number",
-                description:
-                  "Maximum tokens for reviewer's response. Defaults to 32768.",
-              },
-              prNumber: {
-                type: "number",
-                description: "PR number to review. Auto-detects from current branch if omitted.",
-              },
-              sessionName: {
-                type: "string",
-                description: "Name for this review (used in output filename)",
-              },
-              customPrompt: {
-                type: "string",
-                description: "Additional instructions for the reviewer",
-              },
-              focusAreas: {
-                type: "array",
-                items: { type: "string" },
-                description: "Specific areas to focus on",
-              },
-              includeFiles: {
-                type: "array",
-                items: { type: "string" },
-                description: "Additional files or folders to include (supports ~ and relative paths)",
-              },
-              allowExternalFiles: {
-                type: "boolean",
-                default: false,
-                description: "Allow including files outside the project directory. Required when includeFiles contains paths outside the project.",
-              },
-              dryRun: {
-                type: "boolean",
-                default: false,
-                description: "If true, return a preview of what would be sent without calling the external API",
-              },
-            },
-            required: ["provider", "projectPath"],
-          },
+          description:
+            `External review from Gemini (in-process), Codex (a /codex:rescue handoff), or both (consensus). Available: ${providerList}. ` +
+            "Bundles session context and related code; writes the review file and egress manifest. " +
+            "Complete codex/consensus handoffs per the /second-opinion skill.",
+          inputSchema: buildToolInputSchema(),
         },
       ],
     };
@@ -158,58 +114,72 @@ The reviewer sees the same context Claude had, plus related code for full unders
       // Execute the review
       const result = await executeReview(input);
 
-      // Handle dry run response
+      // Dry run keeps full egress detail (paths, blocked files, warnings):
+      // it is the confirmation surface before content leaves the machine.
       if (result.dryRun) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                {
-                  dryRun: true,
-                  provider: result.provider,
-                  summary: result.summary,
-                  totalTokens: result.totalTokens,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        return textResult(
+          {
+            dryRun: true,
+            provider: result.provider,
+            summary: result.summary,
+            totalTokens: result.totalTokens,
+            budgetWarnings: result.budgetWarnings,
+            message: result.message,
+            prDetectionFailure: result.prDetectionFailure,
+          },
+          true
+        );
+      }
+
+      if (result.handoff) {
+        return textResult({
+          handoff: true,
+          provider: result.provider,
+          model: result.model,
+          promptFile: result.promptFile,
+          reviewFile: result.reviewFile,
+          egressManifestFile: result.egressManifestFile,
+          rescueCommand: result.rescueCommand,
+          verifyCommand: result.verifyCommand,
+          spliceCommand: result.spliceCommand,
+          filesReviewed: result.filesReviewed,
+          contextTokens: result.contextTokens,
+          egress: leanEgress(result.summary),
+          budgetWarnings: leanWarnings(result.budgetWarnings),
+          // Status only — the full Gemini review is already in reviewFile,
+          // which Claude reads once for synthesis. A preview here would be
+          // paid for and then discarded.
+          gemini: result.gemini && {
+            model: result.gemini.model,
+            tokensUsed: result.gemini.tokensUsed,
+            error: result.gemini.error,
+          },
+          prDetectionFailure: result.prDetectionFailure,
+        });
       }
 
       // Return success response for actual review
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                success: true,
-                reviewFile: result.reviewFile,
-                egressManifestFile: result.egressManifestFile,
-                provider: result.provider,
-                model: result.model,
-                filesReviewed: result.filesReviewed,
-                contextTokens: result.contextTokens,
-                tokensUsed: result.tokensUsed,
-                summary: result.summary,
-                reviewPreview: result.review.substring(0, 500) + (result.review.length > 500 ? "..." : ""),
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      return textResult({
+        success: true,
+        reviewFile: result.reviewFile,
+        egressManifestFile: result.egressManifestFile,
+        provider: result.provider,
+        model: result.model,
+        filesReviewed: result.filesReviewed,
+        contextTokens: result.contextTokens,
+        tokensUsed: result.tokensUsed,
+        egress: leanEgress(result.summary),
+        budgetWarnings: leanWarnings(result.budgetWarnings),
+        prDetectionFailure: result.prDetectionFailure,
+        reviewPreview: result.review.substring(0, 500) + (result.review.length > 500 ? "..." : ""),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ success: false, error: message }, null, 2),
+            text: JSON.stringify({ success: false, error: message }),
           },
         ],
         isError: true,

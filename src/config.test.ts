@@ -3,12 +3,30 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import {
+  ConfigSchema,
   getConfigDir,
   getClaudeProjectsDir,
+  getPackagedTemplatePath,
   loadConfig,
   loadReviewInstructions,
 } from "./config.js";
 import { createTempDir, cleanupTempDir, createProjectStructure } from "./test-utils.js";
+
+// Hermetic home for loadConfig tests: loadConfig merges
+// ~/.config/second-opinion/config.json, so homedir must be redirectable to an
+// empty temp dir or a developer's personal config leaks into assertions.
+// ESM namespace exports cannot be spied on, so the module itself is mocked.
+const osMock = vi.hoisted(() => ({
+  homedirOverride: undefined as string | undefined,
+}));
+
+vi.mock("os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("os")>();
+  return {
+    ...actual,
+    homedir: () => osMock.homedirOverride ?? actual.homedir(),
+  };
+});
 
 describe("getConfigDir", () => {
   it("returns ~/.config/second-opinion path", () => {
@@ -26,17 +44,19 @@ describe("getClaudeProjectsDir", () => {
 
 describe("loadConfig", () => {
   const originalEnv = process.env;
+  let fakeHome: string;
 
   beforeEach(() => {
     // Reset env for each test
     vi.resetModules();
     process.env = { ...originalEnv };
+    fakeHome = createTempDir("config-home");
+    osMock.homedirOverride = fakeHome;
     // Clear relevant env vars
     delete process.env.GEMINI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
     delete process.env.DEFAULT_PROVIDER;
     delete process.env.GEMINI_MODEL;
-    delete process.env.OPENAI_MODEL;
+    delete process.env.CODEX_MODEL;
     delete process.env.MAX_CONTEXT_TOKENS;
     delete process.env.MAX_OUTPUT_TOKENS;
     delete process.env.REVIEWS_DIR;
@@ -47,43 +67,55 @@ describe("loadConfig", () => {
 
   afterEach(() => {
     process.env = originalEnv;
+    osMock.homedirOverride = undefined;
+    cleanupTempDir(fakeHome);
   });
 
   it("uses env vars when set", () => {
     process.env.GEMINI_API_KEY = "test-gemini-key";
-    process.env.OPENAI_API_KEY = "test-openai-key";
-    process.env.DEFAULT_PROVIDER = "openai";
     process.env.GEMINI_MODEL = "gemini-pro";
-    process.env.OPENAI_MODEL = "gpt-4-turbo";
+    process.env.CODEX_MODEL = "gpt-5.6-sol-custom";
     process.env.MAX_CONTEXT_TOKENS = "50000";
+    process.env.MAX_OUTPUT_TOKENS = "16000";
     process.env.REVIEWS_DIR = "custom-reviews";
+    process.env.TEMPERATURE = "0.7";
+    process.env.RATE_LIMIT_WINDOW_MS = "30000";
+    process.env.RATE_LIMIT_MAX_REQUESTS = "5";
 
     const config = loadConfig();
 
     expect(config.geminiApiKey).toBe("test-gemini-key");
-    expect(config.openaiApiKey).toBe("test-openai-key");
-    expect(config.defaultProvider).toBe("openai");
     expect(config.geminiModel).toBe("gemini-pro");
-    expect(config.openaiModel).toBe("gpt-4-turbo");
+    expect(config.codexModel).toBe("gpt-5.6-sol-custom");
     expect(config.maxContextTokens).toBe(50000);
+    expect(config.maxOutputTokens).toBe(16000);
     expect(config.reviewsDir).toBe("custom-reviews");
+    expect(config.temperature).toBe(0.7);
+    expect(config.rateLimitWindowMs).toBe(30000);
+    expect(config.rateLimitMaxRequests).toBe(5);
   });
 
   it("applies schema defaults when no config provided", () => {
     const config = loadConfig();
 
-    expect(config.defaultProvider).toBe("consensus");
     expect(config.geminiModel).toBe("gemini-pro-latest");
-    expect(config.openaiModel).toBe("gpt-5.5");
+    expect(config.codexModel).toBe("gpt-5.6-sol");
     expect(config.maxContextTokens).toBe(200000);
+    expect(config.maxOutputTokens).toBe(32768);
     expect(config.reviewsDir).toBe("second-opinions");
+    expect(config.temperature).toBe(0.3);
+    expect(config.rateLimitWindowMs).toBe(60000);
+    expect(config.rateLimitMaxRequests).toBe(10);
   });
 
-  it("handles invalid DEFAULT_PROVIDER gracefully", () => {
-    process.env.DEFAULT_PROVIDER = "invalid";
+  it("ignores the removed DEFAULT_PROVIDER variable", () => {
+    // The provider is required per call; a config default would silently
+    // compete with the skill's explicit provider selection.
+    process.env.DEFAULT_PROVIDER = "gemini";
 
-    // Should throw or use default due to zod validation
-    expect(() => loadConfig()).toThrow();
+    const config = loadConfig();
+
+    expect(config).not.toHaveProperty("defaultProvider");
   });
 
   it("handles invalid MAX_CONTEXT_TOKENS gracefully", () => {
@@ -91,6 +123,43 @@ describe("loadConfig", () => {
 
     // parseInt("not-a-number") returns NaN, which zod rejects
     expect(() => loadConfig()).toThrow();
+  });
+
+  it("ignores legacy OpenAI environment variables", () => {
+    process.env.OPENAI_API_KEY = "legacy-openai-key";
+    process.env.OPENAI_MODEL = "legacy-openai-model";
+
+    const config = loadConfig();
+
+    expect(config).not.toHaveProperty("openaiApiKey");
+    expect(config).not.toHaveProperty("openaiModel");
+    expect(config.codexModel).toBe("gpt-5.6-sol");
+  });
+});
+
+describe("ConfigSchema", () => {
+  it("exposes the Codex handoff model without OpenAI API settings", () => {
+    const config = ConfigSchema.parse({
+      openaiApiKey: "legacy-key",
+      openaiModel: "legacy-model",
+    });
+
+    expect(config.codexModel).toBe("gpt-5.6-sol");
+    expect(config).not.toHaveProperty("openaiApiKey");
+    expect(config).not.toHaveProperty("openaiModel");
+  });
+
+  it("has no default-provider setting", () => {
+    const config = ConfigSchema.parse({ defaultProvider: "openai" });
+
+    expect(config).not.toHaveProperty("defaultProvider");
+  });
+
+  it("validates Gemini-only temperature bounds", () => {
+    expect(ConfigSchema.parse({ temperature: 0 }).temperature).toBe(0);
+    expect(ConfigSchema.parse({ temperature: 1 }).temperature).toBe(1);
+    expect(() => ConfigSchema.parse({ temperature: -0.1 })).toThrow();
+    expect(() => ConfigSchema.parse({ temperature: 1.1 })).toThrow();
   });
 });
 
@@ -163,18 +232,41 @@ describe("loadReviewInstructions", () => {
     expect(instructions).toContain("Output Format");
   });
 
-  it("hardcoded default includes phased methodology and lateral thinking", () => {
-    // ESM prevents mocking fs.existsSync, so we verify the hardcoded
-    // default string in config.ts source as a regression check.
-    const configSource = fs.readFileSync(
-      path.resolve("src/config.ts"),
+  it("packaged fallback is byte-identical to the canonical template", () => {
+    // The abbreviated embedded copy drifted from templates/second-opinion.md
+    // and was removed; the fallback now reads the packaged canonical file.
+    const packaged = fs.readFileSync(getPackagedTemplatePath(), "utf-8");
+    const canonical = fs.readFileSync(
+      path.resolve("templates/second-opinion.md"),
       "utf-8"
     );
-    expect(configSource).toContain("Upstream/Downstream Opportunities");
-    expect(configSource).toContain("Think Upstream");
-    expect(configSource).toContain("Self-Interrogation");
-    expect(configSource).toContain("What would have to be true");
-    expect(configSource).toContain("[BLOCKING]");
-    expect(configSource).toContain("Phased Review");
+
+    expect(packaged).toBe(canonical);
+    expect(packaged).toContain("Phased Review");
+    expect(packaged).toContain("Self-Interrogation");
+    expect(packaged).toContain("Triage Defensive Findings to the Right Altitude");
+  });
+
+  it("fallback with no project or global file loads the canonical template", () => {
+    // Redirect home to an empty temp dir so no developer-installed
+    // ~/.config/second-opinion/second-opinion.md can satisfy the global
+    // branch; this exercises the packaged-template fallback end to end.
+    const fakeHome = createTempDir("fallback-home");
+    osMock.homedirOverride = fakeHome;
+    try {
+      const emptyProject = path.join(tmpDir, "fallback-canonical");
+      fs.mkdirSync(emptyProject, { recursive: true });
+
+      const instructions = loadReviewInstructions(emptyProject);
+      const canonical = fs.readFileSync(
+        path.resolve("templates/second-opinion.md"),
+        "utf-8"
+      );
+
+      expect(instructions).toBe(canonical);
+    } finally {
+      osMock.homedirOverride = undefined;
+      cleanupTempDir(fakeHome);
+    }
   });
 });

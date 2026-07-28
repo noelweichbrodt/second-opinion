@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getClaudeProjectsDir } from "../config.js";
+import { estimateTokens } from "../utils/tokens.js";
 
 export interface SessionMessage {
   role: "user" | "assistant";
@@ -426,21 +427,21 @@ function condenseCodeBlocks(content: string): string {
   });
 }
 
-/**
- * Format session context as markdown for the reviewer
- */
-export function formatConversationContext(context: SessionContext): string {
-  if (context.conversation.length === 0) {
-    return "";
-  }
+const CONVERSATION_HEADER =
+  "## Conversation Context\n\n" +
+  "This is the conversation between the user and Claude that led to these changes.\n" +
+  "*Note: Code snippets in conversation may be outdated. See the Files section for current code.*\n\n";
 
-  let output = "## Conversation Context\n\n";
-  output +=
-    "This is the conversation between the user and Claude that led to these changes.\n";
-  output +=
-    "*Note: Code snippets in conversation may be outdated. See the Files section for current code.*\n\n";
+interface MessageChunk {
+  role: string;
+  content: string;
+  formatted: string;
+  tokens: number;
+}
 
-  for (const msg of context.conversation) {
+/** Apply the per-message processing (code condensing, 2k-char cap). */
+function buildMessageChunks(context: SessionContext): MessageChunk[] {
+  return context.conversation.map((msg) => {
     const role = msg.role === "user" ? "**User**" : "**Claude**";
 
     // Condense code blocks to avoid stale code confusion
@@ -451,8 +452,188 @@ export function formatConversationContext(context: SessionContext): string {
       content = content.substring(0, 2000) + "\n...(truncated)";
     }
 
-    output += `${role}:\n${content}\n\n`;
+    const formatted = `${role}:\n${content}\n\n`;
+    return { role, content, formatted, tokens: estimateTokens(formatted) };
+  });
+}
+
+/** Single-line excerpt: code blocks stripped, whitespace collapsed, capped. */
+function excerptOf(content: string, maxChars: number): string {
+  const flat = content
+    .replace(/```[\s\S]*?```/g, " [code omitted] ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return flat.length > maxChars ? flat.substring(0, maxChars) + "…" : flat;
+}
+
+/**
+ * Format session context as markdown for the reviewer (unbounded).
+ */
+export function formatConversationContext(context: SessionContext): string {
+  if (context.conversation.length === 0) {
+    return "";
+  }
+  return (
+    CONVERSATION_HEADER +
+    buildMessageChunks(context)
+      .map((c) => c.formatted)
+      .join("")
+  );
+}
+
+export interface DistilledConversation {
+  text: string;
+  /** Messages reduced to short excerpts (middle tier). */
+  condensedMessages: number;
+  /** Messages reduced to one-line outline entries (oldest tier). */
+  outlinedMessages: number;
+  /** Messages beyond outline capacity, represented only by a count marker. */
+  omittedMessages: number;
+  originalTokens: number;
+  finalTokens: number;
+}
+
+/**
+ * Format session context within a token budget by distilling, not dropping:
+ * the first user message (the original request) and the newest turns stay
+ * verbatim, older turns become short excerpts, the oldest become one-line
+ * outline entries. Only when even outline lines exceed their share is the
+ * remainder collapsed into an explicit count marker. Deterministic — no
+ * generated summaries.
+ */
+export function distillConversationContext(
+  context: SessionContext,
+  budgetTokens: number
+): DistilledConversation {
+  const empty: DistilledConversation = {
+    text: "",
+    condensedMessages: 0,
+    outlinedMessages: 0,
+    omittedMessages: 0,
+    originalTokens: 0,
+    finalTokens: 0,
+  };
+  if (context.conversation.length === 0) {
+    return empty;
   }
 
-  return output;
+  const chunks = buildMessageChunks(context);
+  const headerTokens = estimateTokens(CONVERSATION_HEADER);
+  const originalTokens =
+    headerTokens + chunks.reduce((sum, c) => sum + c.tokens, 0);
+
+  if (originalTokens <= budgetTokens) {
+    const text = CONVERSATION_HEADER + chunks.map((c) => c.formatted).join("");
+    return { ...empty, text, originalTokens, finalTokens: originalTokens };
+  }
+
+  // Anchor: the first user message states the original requirements.
+  let anchorIdx = chunks.findIndex((c) => c.role === "**User**");
+  if (anchorIdx === -1) anchorIdx = 0;
+
+  const markerAllowance = 100;
+  const available = Math.max(
+    0,
+    budgetTokens - headerTokens - chunks[anchorIdx].tokens - markerAllowance
+  );
+  const tailBudget = Math.floor(available * 0.75);
+  const condensedBudget = Math.floor(available * 0.2);
+  const outlineBudget = available - tailBudget - condensedBudget;
+
+  // Walk newest → oldest assigning each message to the strongest tier that
+  // still has budget: verbatim, then excerpt, then outline, then omitted.
+  const verbatim = new Set<number>();
+  const condensed = new Map<number, string>();
+  const outlined = new Map<number, string>();
+  let omittedMessages = 0;
+  let omittedTokens = 0;
+  let tailUsed = 0;
+  let condensedUsed = 0;
+  let outlineUsed = 0;
+
+  for (let i = chunks.length - 1; i >= 0; i--) {
+    if (i === anchorIdx) continue;
+    const chunk = chunks[i];
+
+    if (condensed.size === 0 && outlined.size === 0 && omittedMessages === 0
+        && tailUsed + chunk.tokens <= tailBudget) {
+      verbatim.add(i);
+      tailUsed += chunk.tokens;
+      continue;
+    }
+
+    const excerptLine = `${chunk.role} (condensed):\n${excerptOf(chunk.content, 240)}\n\n`;
+    const excerptTokens = estimateTokens(excerptLine);
+    if (outlined.size === 0 && omittedMessages === 0
+        && condensedUsed + excerptTokens <= condensedBudget) {
+      condensed.set(i, excerptLine);
+      condensedUsed += excerptTokens;
+      continue;
+    }
+
+    const outlineLine = `- ${chunk.role}: ${excerptOf(chunk.content, 100)}\n`;
+    const outlineTokens = estimateTokens(outlineLine);
+    if (omittedMessages === 0 && outlineUsed + outlineTokens <= outlineBudget) {
+      outlined.set(i, outlineLine);
+      outlineUsed += outlineTokens;
+      continue;
+    }
+
+    omittedMessages++;
+    omittedTokens += chunk.tokens;
+  }
+
+  // Assemble: marker first, then every retained message in strict
+  // chronological order regardless of tier (the anchor sits at its true
+  // position even when the transcript is not user-led).
+  const omittedNote =
+    omittedMessages > 0
+      ? `; the ${omittedMessages} earliest messages (~${omittedTokens.toLocaleString()} tokens) are omitted`
+      : "";
+  // Describe what actually happened: with a tiny budget only the original
+  // request survives, and claiming "newest turns verbatim" would be false.
+  const marker =
+    verbatim.size > 0
+      ? `*[Long conversation distilled to fit the conversation budget: newest turns verbatim, older turns condensed, oldest outlined${omittedNote}. Raise maxInputTokens to include more.]*\n\n`
+      : `*[Conversation budget only fits the original request; ${
+          chunks.length - 1
+        } other messages were condensed, outlined, or omitted${omittedNote}. Raise maxInputTokens to include more.]*\n\n`;
+  const parts: string[] = [CONVERSATION_HEADER, marker];
+
+  let inOutline = false;
+  for (let i = 0; i < chunks.length; i++) {
+    const outlineLine = outlined.get(i);
+    if (outlineLine !== undefined) {
+      if (!inOutline) {
+        parts.push("**Earlier conversation (outline):**\n");
+        inOutline = true;
+      }
+      parts.push(outlineLine);
+      continue;
+    }
+    if (inOutline) {
+      parts.push("\n");
+      inOutline = false;
+    }
+    if (i === anchorIdx) {
+      parts.push(chunks[i].formatted);
+    } else if (condensed.has(i)) {
+      parts.push(condensed.get(i)!);
+    } else if (verbatim.has(i)) {
+      parts.push(chunks[i].formatted);
+    }
+  }
+  if (inOutline) {
+    parts.push("\n");
+  }
+
+  const text = parts.join("");
+  return {
+    text,
+    condensedMessages: condensed.size,
+    outlinedMessages: outlined.size,
+    omittedMessages,
+    originalTokens,
+    finalTokens: estimateTokens(text),
+  };
 }

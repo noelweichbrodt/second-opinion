@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { bundleContext, formatBundleAsMarkdown, allocateBudget, CategoryCandidates, CandidateFile, FileEntry } from "./bundler.js";
+import { bundleContext, formatBundleAsMarkdown, allocateBudget, CategoryCandidates, CandidateFile, FileEntry, expandHome } from "./bundler.js";
 import { BUDGET_ALLOCATION, CATEGORY_PRIORITY_ORDER } from "../utils/tokens.js";
 import { createTempDir, cleanupTempDir, createProjectStructure } from "../test-utils.js";
 
@@ -244,7 +244,6 @@ describe("formatBundleAsMarkdown", () => {
     expect(markdown).toContain("Dependencies (files imported by modified code)");
     expect(markdown).toContain("### src/index.ts");
     expect(markdown).toContain("### src/utils.ts");
-    expect(markdown).toContain("**Total files:** 2");
   });
 
   it("includes omitted files section when files were omitted", () => {
@@ -279,14 +278,14 @@ describe("formatBundleAsMarkdown", () => {
 
     const markdown = formatBundleAsMarkdown(bundle, "/project");
 
-    expect(markdown).toContain("### Omitted Files");
+    expect(markdown).toContain("## Omitted Files");
     expect(markdown).toContain("**Blocked (sensitive path):**");
     expect(markdown).toContain(".env");
     expect(markdown).toContain("**Budget exceeded:**");
     expect(markdown).toContain("large-file.ts");
   });
 
-  it("shows context summary with token breakdown", () => {
+  it("omits the reviewer-facing context summary breakdown", () => {
     const bundle = {
       conversationContext: "",
       files: [
@@ -318,56 +317,83 @@ describe("formatBundleAsMarkdown", () => {
 
     const markdown = formatBundleAsMarkdown(bundle, "/project");
 
-    expect(markdown).toContain("## Context Summary");
-    expect(markdown).toContain("**Total files:** 2");
-    expect(markdown).toContain("**Estimated tokens:** 150");
-    expect(markdown).toContain("session: 100 tokens");
-    expect(markdown).toContain("test: 50 tokens");
+    // Pure bookkeeping (file/token counts) carried no review signal and was
+    // dropped from the egress payload.
+    expect(markdown).not.toContain("## Context Summary");
+    expect(markdown).not.toContain("**Total files:**");
+    expect(markdown).not.toContain("**Estimated tokens:**");
+    // No omissions → no Omitted Files section either.
+    expect(markdown).not.toContain("## Omitted Files");
   });
 });
 
-describe("bundleContext - tilde expansion", () => {
+describe("expandHome", () => {
+  it("expands tilde paths relative to the supplied home directory", () => {
+    const testHome = path.join(os.tmpdir(), "bundler-test-home");
+
+    expect(expandHome("~/project/index.ts", testHome)).toBe(
+      path.join(testHome, "project/index.ts")
+    );
+    expect(expandHome("src/index.ts", testHome)).toBe("src/index.ts");
+  });
+});
+
+describe("bundleContext - tilde expansion end-to-end", () => {
   let tmpDir: string;
+  let fakeHome: string;
 
   beforeAll(() => {
-    tmpDir = createTempDir("bundler-tilde");
+    tmpDir = createTempDir("bundler-tilde-project");
+    fakeHome = createTempDir("bundler-tilde-home");
+
     createProjectStructure(tmpDir, {
       "src/index.ts": "export const main = 1;",
     });
+    fs.writeFileSync(path.join(fakeHome, "notes.ts"), "export const fromHome = 1;");
   });
 
   afterAll(() => {
     cleanupTempDir(tmpDir);
+    cleanupTempDir(fakeHome);
   });
 
-  it("expands tilde paths to home directory", async () => {
-    // Create a file in home directory for testing
-    const testFile = path.join(os.homedir(), ".second-opinion-test-file.ts");
-    const cleanup = () => {
-      try {
-        fs.unlinkSync(testFile);
-      } catch {}
-    };
+  it("resolves ~/ includeFiles against the home directory through the full pipeline", async () => {
+    const bundle = await bundleContext({
+      projectPath: tmpDir,
+      includeFiles: ["~/notes.ts"],
+      allowExternalFiles: true,
+      homeDirectory: fakeHome,
+      includeConversation: false,
+      includeDependencies: false,
+      includeDependents: false,
+      includeTests: false,
+      includeTypes: false,
+    });
 
-    try {
-      fs.writeFileSync(testFile, "export const test = 1;");
+    expect(bundle.files).toHaveLength(1);
+    expect(bundle.files[0].path).toBe(
+      fs.realpathSync(path.join(fakeHome, "notes.ts"))
+    );
+  });
 
-      const bundle = await bundleContext({
-        projectPath: tmpDir,
-        includeFiles: ["~/.second-opinion-test-file.ts"],
-        allowExternalFiles: true, // External since it's in home dir
-        includeConversation: false,
-        includeDependencies: false,
-        includeDependents: false,
-        includeTests: false,
-        includeTypes: false,
-      });
+  it("still gates tilde-expanded files behind allowExternalFiles", async () => {
+    const bundle = await bundleContext({
+      projectPath: tmpDir,
+      includeFiles: ["~/notes.ts"],
+      homeDirectory: fakeHome,
+      includeConversation: false,
+      includeDependencies: false,
+      includeDependents: false,
+      includeTests: false,
+      includeTypes: false,
+    });
 
-      expect(bundle.files).toHaveLength(1);
-      expect(bundle.files[0].path).toBe(testFile);
-    } finally {
-      cleanup();
-    }
+    expect(bundle.files).toHaveLength(0);
+    expect(
+      bundle.omittedFiles.some(
+        (f) => f.reason === "outside_project_requires_allowExternalFiles"
+      )
+    ).toBe(true);
   });
 });
 
@@ -678,7 +704,7 @@ describe("formatBundleAsMarkdown - omitted files sections", () => {
 
     const markdown = formatBundleAsMarkdown(bundle, "/project");
 
-    expect(markdown).toContain("### Omitted Files");
+    expect(markdown).toContain("## Omitted Files");
     expect(markdown).toContain("outside project - set allowExternalFiles: true");
     expect(markdown).toContain("/external/lib.ts");
   });
@@ -709,7 +735,7 @@ describe("formatBundleAsMarkdown - omitted files sections", () => {
 
     const markdown = formatBundleAsMarkdown(bundle, "/project");
 
-    expect(markdown).toContain("### Omitted Files");
+    expect(markdown).toContain("## Omitted Files");
     expect(markdown).toContain("**Outside project bounds:**");
     expect(markdown).toContain("/external/auto-discovered.ts (dependency)");
   });

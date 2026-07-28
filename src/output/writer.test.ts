@@ -4,11 +4,29 @@ import * as path from "path";
 import * as os from "os";
 import {
   writeReview,
+  writePromptFile,
   writeEgressManifest,
+  generateBaseFilename,
   deriveSessionName,
   ReviewMetadata,
   EgressSummary,
 } from "./writer.js";
+
+describe("generateBaseFilename", () => {
+  it("uses the same base for handoff prompt and review files", () => {
+    const metadata: ReviewMetadata = {
+      sessionName: "Codex Handoff",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      timestamp: "2026-07-27T00:00:00Z",
+      filesReviewed: [],
+    };
+
+    expect(generateBaseFilename(metadata)).toBe(
+      "codex-handoff.codex.review"
+    );
+  });
+});
 
 describe("deriveSessionName", () => {
   it("extracts name from first user message", () => {
@@ -71,8 +89,8 @@ describe("writeReview", () => {
   it("creates review file with task slug when task provided", () => {
     const metadata: ReviewMetadata = {
       sessionName: "Auth Refactor",
-      provider: "openai",
-      model: "gpt-4o",
+      provider: "codex",
+      model: "gpt-5.6-sol",
       timestamp: "2024-01-01T00:00:00Z",
       filesReviewed: [],
       task: "Check for security vulnerabilities in the authentication flow",
@@ -80,7 +98,7 @@ describe("writeReview", () => {
 
     const filePath = writeReview(tmpDir, "reviews", metadata, "# Analysis\nNo issues found.");
 
-    expect(filePath).toContain("auth-refactor.openai.check-for-security");
+    expect(filePath).toContain("auth-refactor.codex.check-for-security");
     expect(filePath.endsWith(".md")).toBe(true);
   });
 
@@ -144,6 +162,63 @@ describe("writeReview", () => {
     expect(() => writeReview(tmpDir, "../escape", metadata, "content")).toThrow(
       "path traversal"
     );
+  });
+});
+
+describe("writePromptFile", () => {
+  const tmpDir = path.join(os.tmpdir(), "prompt-writer-test-" + Date.now());
+
+  beforeAll(() => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("writes a prompt beside the review using the same base filename", () => {
+    const metadata: ReviewMetadata = {
+      sessionName: "Security Review",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      timestamp: "2026-07-27T00:00:00Z",
+      filesReviewed: [],
+    };
+
+    const promptFile = writePromptFile(
+      tmpDir,
+      "reviews",
+      metadata,
+      "# Codex prompt"
+    );
+    const reviewFile = writeReview(
+      tmpDir,
+      "reviews",
+      metadata,
+      "<!-- placeholder -->"
+    );
+
+    expect(promptFile).toBe(
+      path.join(tmpDir, "reviews", "security-review.codex.review.prompt.md")
+    );
+    expect(reviewFile).toBe(
+      path.join(tmpDir, "reviews", "security-review.codex.review.md")
+    );
+    expect(fs.readFileSync(promptFile, "utf-8")).toBe("# Codex prompt");
+  });
+
+  it("applies reviewsDir traversal validation", () => {
+    const metadata: ReviewMetadata = {
+      sessionName: "Test",
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      timestamp: "2026-07-27T00:00:00Z",
+      filesReviewed: [],
+    };
+
+    expect(() =>
+      writePromptFile(tmpDir, "../escape", metadata, "prompt")
+    ).toThrow("path traversal");
   });
 });
 

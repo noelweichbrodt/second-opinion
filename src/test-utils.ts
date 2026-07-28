@@ -180,6 +180,7 @@ export function initGitRepo(dir: string): void {
   execSync("git init", { cwd: dir, stdio: "pipe" });
   execSync("git config user.email 'test@test.com'", { cwd: dir, stdio: "pipe" });
   execSync("git config user.name 'Test'", { cwd: dir, stdio: "pipe" });
+  execSync("git config commit.gpgsign false", { cwd: dir, stdio: "pipe" });
 }
 
 /**

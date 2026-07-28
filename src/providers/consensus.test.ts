@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Config } from "../config.js";
+import { formatConsensusOutput } from "../output/consensus-formatter.js";
 import { ReviewRequest } from "./base.js";
+import { CodexHandoff } from "./codex.js";
 
-// Mock the provider implementations
 const mockGeminiReview = vi.fn();
-const mockOpenAIReview = vi.fn();
 
 vi.mock("./gemini.js", () => ({
   GeminiProvider: class MockGeminiProvider {
@@ -14,292 +14,168 @@ vi.mock("./gemini.js", () => ({
   },
 }));
 
-vi.mock("./openai.js", () => ({
-  OpenAIProvider: class MockOpenAIProvider {
-    name = "openai";
-    review = mockOpenAIReview;
-    constructor(_apiKey: string, _model: string) {}
-  },
-}));
-
-// Import after mocking
 import {
   getConsensusReview,
   isConsensusAvailable,
-  ConsensusProvider,
 } from "./consensus.js";
 
+const baseConfig = {
+  geminiApiKey: "test-gemini-key",
+  geminiModel: "gemini-2.0-flash-exp",
+  codexModel: "gpt-5.6-sol",
+  maxContextTokens: 100000,
+  maxOutputTokens: 32768,
+  reviewsDir: "second-opinions",
+  temperature: 0.3,
+  rateLimitWindowMs: 60000,
+  rateLimitMaxRequests: 10,
+} as Config;
+
+const baseRequest: ReviewRequest = {
+  instructions: "Review guidelines",
+  context: "# Code\nconst x = 1;",
+};
+
+const codexHandoff: CodexHandoff = {
+  promptFile: "/project/second-opinions/review.consensus.prompt.md",
+  reviewFile: "/project/second-opinions/review.consensus.review.md",
+  egressManifestFile:
+    "/project/second-opinions/review.consensus.review.egress.json",
+  rescueCommand:
+    "/codex:rescue --model gpt-5.6-sol --fresh Read the prompt file",
+  model: "gpt-5.6-sol",
+};
+
 describe("getConsensusReview", () => {
-  const baseConfig: Config = {
-    geminiApiKey: "test-gemini-key",
-    openaiApiKey: "test-openai-key",
-    defaultProvider: "gemini",
-    geminiModel: "gemini-2.0-flash-exp",
-    openaiModel: "gpt-4o",
-    maxContextTokens: 100000,
-    reviewsDir: "second-opinions",
-  };
-
-  const baseRequest: ReviewRequest = {
-    instructions: "Review guidelines",
-    context: "# Code\nconst x = 1;",
-  };
-
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("calls both providers in parallel", async () => {
+  it("calls Gemini and returns the supplied Codex handoff", async () => {
     mockGeminiReview.mockResolvedValue({
       review: "Gemini review",
       model: "gemini-2.0-flash-exp",
       tokensUsed: 100,
     });
-    mockOpenAIReview.mockResolvedValue({
-      review: "OpenAI review",
-      model: "gpt-4o",
-      tokensUsed: 150,
-    });
 
-    const result = await getConsensusReview(baseRequest, baseConfig);
+    const result = await getConsensusReview(
+      baseRequest,
+      baseConfig,
+      codexHandoff
+    );
 
-    expect(mockGeminiReview).toHaveBeenCalled();
-    expect(mockOpenAIReview).toHaveBeenCalled();
+    expect(mockGeminiReview).toHaveBeenCalledOnce();
     expect(result.gemini.review).toBe("Gemini review");
-    expect(result.openai.review).toBe("OpenAI review");
+    expect(result.codex).toBe(codexHandoff);
   });
 
-  it("returns both results when both succeed", async () => {
-    mockGeminiReview.mockResolvedValue({
-      review: "Looks good from Gemini",
-      model: "gemini-2.0-flash-exp",
-      tokensUsed: 500,
-    });
-    mockOpenAIReview.mockResolvedValue({
-      review: "Looks good from OpenAI",
-      model: "gpt-4o",
-      tokensUsed: 600,
-    });
-
-    const result = await getConsensusReview(baseRequest, baseConfig);
-
-    expect(result.gemini.review).toBe("Looks good from Gemini");
-    expect(result.gemini.tokensUsed).toBe(500);
-    expect(result.gemini.error).toBeUndefined();
-
-    expect(result.openai.review).toBe("Looks good from OpenAI");
-    expect(result.openai.tokensUsed).toBe(600);
-    expect(result.openai.error).toBeUndefined();
-  });
-
-  it("throws if Gemini API key is missing", async () => {
+  it("throws if the Gemini API key is missing", async () => {
     const configWithoutGemini = {
       ...baseConfig,
       geminiApiKey: undefined,
-    };
+    } as Config;
 
     await expect(
-      getConsensusReview(baseRequest, configWithoutGemini as Config)
+      getConsensusReview(baseRequest, configWithoutGemini, codexHandoff)
     ).rejects.toThrow("GEMINI_API_KEY");
+    expect(mockGeminiReview).not.toHaveBeenCalled();
   });
 
-  it("throws if OpenAI API key is missing", async () => {
-    const configWithoutOpenAI = {
-      ...baseConfig,
-      openaiApiKey: undefined,
-    };
-
-    await expect(
-      getConsensusReview(baseRequest, configWithoutOpenAI as Config)
-    ).rejects.toThrow("OPENAI_API_KEY");
-  });
-
-  it("handles Gemini failure gracefully", async () => {
+  it("preserves the Codex handoff when Gemini fails", async () => {
     mockGeminiReview.mockRejectedValue(new Error("Gemini API error"));
-    mockOpenAIReview.mockResolvedValue({
-      review: "OpenAI review works",
-      model: "gpt-4o",
-      tokensUsed: 200,
-    });
 
-    const result = await getConsensusReview(baseRequest, baseConfig);
+    const result = await getConsensusReview(
+      baseRequest,
+      baseConfig,
+      codexHandoff
+    );
 
-    expect(result.gemini.error).toBe("Gemini API error");
-    expect(result.gemini.review).toBe("");
-    expect(result.openai.review).toBe("OpenAI review works");
-    expect(result.openai.error).toBeUndefined();
-  });
-
-  it("handles OpenAI failure gracefully", async () => {
-    mockGeminiReview.mockResolvedValue({
-      review: "Gemini review works",
+    expect(result.gemini).toEqual({
+      review: "",
       model: "gemini-2.0-flash-exp",
-      tokensUsed: 200,
+      error: "Gemini API error",
     });
-    mockOpenAIReview.mockRejectedValue(new Error("OpenAI rate limited"));
-
-    const result = await getConsensusReview(baseRequest, baseConfig);
-
-    expect(result.gemini.review).toBe("Gemini review works");
-    expect(result.gemini.error).toBeUndefined();
-    expect(result.openai.error).toBe("OpenAI rate limited");
-    expect(result.openai.review).toBe("");
+    expect(result.codex).toBe(codexHandoff);
   });
 
-  it("handles both providers failing", async () => {
-    mockGeminiReview.mockRejectedValue(new Error("Gemini down"));
-    mockOpenAIReview.mockRejectedValue(new Error("OpenAI down"));
-
-    const result = await getConsensusReview(baseRequest, baseConfig);
-
-    expect(result.gemini.error).toBe("Gemini down");
-    expect(result.openai.error).toBe("OpenAI down");
-  });
-
-  it("passes temperature to both providers", async () => {
+  it("passes Gemini-only generation options through unchanged", async () => {
     mockGeminiReview.mockResolvedValue({
       review: "Review",
       model: "gemini-2.0-flash-exp",
     });
-    mockOpenAIReview.mockResolvedValue({
-      review: "Review",
-      model: "gpt-4o",
-    });
-
-    const requestWithTemp: ReviewRequest = {
+    const request: ReviewRequest = {
       ...baseRequest,
       temperature: 0.7,
+      maxOutputTokens: 1234,
     };
 
-    await getConsensusReview(requestWithTemp, baseConfig);
+    await getConsensusReview(request, baseConfig, codexHandoff);
 
     expect(mockGeminiReview).toHaveBeenCalledWith(
-      expect.objectContaining({ temperature: 0.7 })
-    );
-    expect(mockOpenAIReview).toHaveBeenCalledWith(
-      expect.objectContaining({ temperature: 0.7 })
+      expect.objectContaining({
+        temperature: 0.7,
+        maxOutputTokens: 1234,
+      })
     );
   });
 });
 
 describe("isConsensusAvailable", () => {
-  it("returns true when both API keys are configured", () => {
-    const config: Config = {
-      geminiApiKey: "key1",
-      openaiApiKey: "key2",
-      defaultProvider: "gemini",
-      geminiModel: "gemini-2.0-flash-exp",
-      openaiModel: "gpt-4o",
-      maxContextTokens: 100000,
-      reviewsDir: "second-opinions",
-    };
-
-    expect(isConsensusAvailable(config)).toBe(true);
+  it("returns true when Gemini is configured", () => {
+    expect(isConsensusAvailable(baseConfig)).toBe(true);
   });
 
-  it("returns false when Gemini key is missing", () => {
-    const config: Config = {
-      geminiApiKey: undefined,
-      openaiApiKey: "key2",
-      defaultProvider: "gemini",
-      geminiModel: "gemini-2.0-flash-exp",
-      openaiModel: "gpt-4o",
-      maxContextTokens: 100000,
-      reviewsDir: "second-opinions",
-    };
-
-    expect(isConsensusAvailable(config)).toBe(false);
-  });
-
-  it("returns false when OpenAI key is missing", () => {
-    const config: Config = {
-      geminiApiKey: "key1",
-      openaiApiKey: undefined,
-      defaultProvider: "gemini",
-      geminiModel: "gemini-2.0-flash-exp",
-      openaiModel: "gpt-4o",
-      maxContextTokens: 100000,
-      reviewsDir: "second-opinions",
-    };
-
-    expect(isConsensusAvailable(config)).toBe(false);
-  });
-
-  it("returns false when both keys are missing", () => {
-    const config: Config = {
-      geminiApiKey: undefined,
-      openaiApiKey: undefined,
-      defaultProvider: "gemini",
-      geminiModel: "gemini-2.0-flash-exp",
-      openaiModel: "gpt-4o",
-      maxContextTokens: 100000,
-      reviewsDir: "second-opinions",
-    };
-
-    expect(isConsensusAvailable(config)).toBe(false);
+  it("returns false when Gemini is not configured", () => {
+    expect(
+      isConsensusAvailable({
+        ...baseConfig,
+        geminiApiKey: undefined,
+      } as Config)
+    ).toBe(false);
   });
 });
 
-describe("ConsensusProvider", () => {
-  const baseConfig: Config = {
-    geminiApiKey: "test-gemini-key",
-    openaiApiKey: "test-openai-key",
-    defaultProvider: "gemini",
-    geminiModel: "gemini-2.0-flash-exp",
-    openaiModel: "gpt-4o",
-    maxContextTokens: 100000,
-    reviewsDir: "second-opinions",
-  };
+describe("formatConsensusOutput", () => {
+  it("includes the synthesis framework, full Gemini review, and Codex placeholder", () => {
+    const output = formatConsensusOutput(
+      {
+        gemini: {
+          review: "## Gemini finding\n\nThe complete Gemini response.",
+          model: "gemini-2.0-flash-exp",
+          tokensUsed: 42,
+        },
+        codex: codexHandoff,
+      },
+      { task: "Assess the refactor" }
+    );
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+    expect(output).toContain("# Consensus Analysis: Assess the refactor");
+    expect(output).toContain("## Synthesis");
+    expect(output).toContain("both / Gemini only / Codex only");
+    expect(output).toContain("## Gemini's Review");
+    expect(output).toContain(
+      "## Gemini finding\n\nThe complete Gemini response."
+    );
+    expect(output).toContain("## Codex Review");
+    expect(output).toContain(codexHandoff.rescueCommand);
+    expect(output).toContain(codexHandoff.promptFile);
+    expect(output).toContain(
+      "<!-- Paste the verbatim /codex:rescue output below this line -->"
+    );
   });
 
-  it("has name 'consensus'", () => {
-    const provider = new ConsensusProvider(baseConfig);
-    expect(provider.name).toBe("consensus");
-  });
-
-  it("returns combined review from both providers", async () => {
-    mockGeminiReview.mockResolvedValue({
-      review: "Gemini says: looks good",
-      model: "gemini-2.0-flash-exp",
-      tokensUsed: 100,
-    });
-    mockOpenAIReview.mockResolvedValue({
-      review: "OpenAI says: also good",
-      model: "gpt-4o",
-      tokensUsed: 150,
+  it("reports Gemini errors while leaving Codex awaiting handoff", () => {
+    const output = formatConsensusOutput({
+      gemini: {
+        review: "",
+        model: "gemini-2.0-flash-exp",
+        error: "quota exceeded",
+      },
+      codex: codexHandoff,
     });
 
-    const provider = new ConsensusProvider(baseConfig);
-    const result = await provider.review({
-      instructions: "Review",
-      context: "Code",
-    });
-
-    expect(result.review).toContain("Gemini");
-    expect(result.review).toContain("OpenAI");
-    expect(result.model).toContain("consensus");
-    expect(result.tokensUsed).toBe(250); // 100 + 150
-  });
-
-  it("includes error messages in combined review", async () => {
-    mockGeminiReview.mockRejectedValue(new Error("Gemini failed"));
-    mockOpenAIReview.mockResolvedValue({
-      review: "OpenAI review",
-      model: "gpt-4o",
-      tokensUsed: 100,
-    });
-
-    const provider = new ConsensusProvider(baseConfig);
-    const result = await provider.review({
-      instructions: "Review",
-      context: "Code",
-    });
-
-    expect(result.review).toContain("Gemini");
-    expect(result.review).toContain("Error");
-    expect(result.review).toContain("OpenAI");
+    expect(output).toContain("Gemini: Error - quota exceeded");
+    expect(output).toContain("Codex: Awaiting handoff");
+    expect(output).toContain("> Gemini encountered an error: quota exceeded");
   });
 });

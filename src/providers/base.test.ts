@@ -41,11 +41,16 @@ describe("getSystemPrompt", () => {
     expect(prompt).toContain("QUOTE the specific code");
   });
 
-  it("always includes verification requirements in task prompt", () => {
+  it("keeps grounding but drops review apparatus in the task prompt", () => {
     const prompt = getSystemPrompt(true);
     expect(prompt).toContain("Complete the requested task");
-    expect(prompt).toContain("Verification Requirements");
-    expect(prompt).toContain("QUOTE the specific code");
+    // Replacement tasks keep the no-fabrication rule…
+    expect(prompt).toContain("Ground every claim");
+    // …but not the review nucleus: no methodology delegation, no severity
+    // vocabulary, no Questions routing.
+    expect(prompt).not.toContain("<instructions>");
+    expect(prompt).not.toContain("[BLOCKING]");
+    expect(prompt).not.toContain("Questions");
   });
 });
 

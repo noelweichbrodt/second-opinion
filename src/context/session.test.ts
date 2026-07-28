@@ -7,6 +7,8 @@ import {
   getSessionPath,
   parseSession,
   formatConversationContext,
+  distillConversationContext,
+  SessionContext,
 } from "./session.js";
 import {
   createTempDir,
@@ -1180,4 +1182,137 @@ describe("parseSession - empty/whitespace files", () => {
 // Cleanup mock projects dir at the end
 afterAll(() => {
   cleanupTempDir(mockProjectsDir);
+});
+
+describe("distillConversationContext", () => {
+  function contextWith(
+    messages: { role: "user" | "assistant"; content: string }[]
+  ): SessionContext {
+    return {
+      sessionId: "test",
+      projectPath: "/project",
+      filesRead: [],
+      filesWritten: [],
+      filesEdited: [],
+      fileContents: new Map(),
+      conversation: messages.map((m) => ({ ...m, timestamp: "" })),
+    };
+  }
+
+  it("returns the full conversation verbatim when under budget", () => {
+    const context = contextWith([
+      { role: "user", content: "Add retry logic to the queue" },
+      { role: "assistant", content: "Done, see src/queue.ts" },
+    ]);
+
+    const result = distillConversationContext(context, 20000);
+
+    expect(result.text).toBe(formatConversationContext(context));
+    expect(result.condensedMessages).toBe(0);
+    expect(result.outlinedMessages).toBe(0);
+    expect(result.omittedMessages).toBe(0);
+    expect(result.finalTokens).toBe(result.originalTokens);
+  });
+
+  it("keeps the first user request and newest turns verbatim over budget", () => {
+    const filler = "This message discusses implementation details. ".repeat(30);
+    const messages: { role: "user" | "assistant"; content: string }[] = [
+      { role: "user", content: "ORIGINAL-REQUEST: build the parser" },
+    ];
+    for (let i = 0; i < 60; i++) {
+      messages.push({
+        role: i % 2 === 0 ? "assistant" : "user",
+        content: `turn-${i} ${filler}`,
+      });
+    }
+    messages.push({ role: "user", content: "NEWEST-CORRECTION: use zod" });
+
+    const result = distillConversationContext(contextWith(messages), 5000);
+
+    // Anchor and newest turn survive verbatim; a distillation marker appears.
+    expect(result.text).toContain("ORIGINAL-REQUEST: build the parser");
+    expect(result.text).toContain("NEWEST-CORRECTION: use zod");
+    expect(result.text).toContain("Long conversation distilled");
+    expect(result.text).toContain("Raise maxInputTokens");
+    // Budget respected (small tolerance for the marker allowance).
+    expect(result.finalTokens).toBeLessThanOrEqual(5100);
+    // History is distilled, not chucked: middle turns appear condensed or
+    // outlined rather than vanishing.
+    expect(
+      result.condensedMessages + result.outlinedMessages
+    ).toBeGreaterThan(0);
+    const represented =
+      1 + // anchor
+      (result.text.match(/\*\*(User|Claude)\*\*/g)?.length ?? 0) +
+      result.outlinedMessages;
+    expect(represented).toBeGreaterThan(10);
+  });
+
+  it("keeps chronological order: outline, then excerpts, then verbatim tail", () => {
+    const filler = "word ".repeat(400);
+    const messages: { role: "user" | "assistant"; content: string }[] = [
+      { role: "user", content: "FIRST-ASK" },
+    ];
+    for (let i = 0; i < 40; i++) {
+      messages.push({ role: "assistant", content: `mid-${i} ${filler}` });
+    }
+    messages.push({ role: "assistant", content: "LAST-TURN done" });
+
+    const result = distillConversationContext(contextWith(messages), 3000);
+
+    const anchor = result.text.indexOf("FIRST-ASK");
+    const last = result.text.indexOf("LAST-TURN");
+    expect(anchor).toBeGreaterThan(-1);
+    expect(last).toBeGreaterThan(anchor);
+    if (result.outlinedMessages > 0) {
+      const outline = result.text.indexOf("Earlier conversation (outline)");
+      expect(outline).toBeGreaterThan(anchor);
+      expect(outline).toBeLessThan(last);
+    }
+  });
+
+  it("counts messages beyond outline capacity explicitly", () => {
+    const filler = "content ".repeat(300);
+    const messages: { role: "user" | "assistant"; content: string }[] = [];
+    for (let i = 0; i < 400; i++) {
+      messages.push({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: `turn-${i} ${filler}`,
+      });
+    }
+
+    const result = distillConversationContext(contextWith(messages), 2000);
+
+    expect(result.omittedMessages).toBeGreaterThan(0);
+    expect(result.text).toContain("earliest messages");
+    expect(result.text).toContain("omitted");
+    expect(result.finalTokens).toBeLessThan(result.originalTokens);
+  });
+
+  it("returns empty result for an empty conversation", () => {
+    const result = distillConversationContext(contextWith([]), 20000);
+    expect(result.text).toBe("");
+    expect(result.originalTokens).toBe(0);
+  });
+
+  it("uses honest marker wording when only the anchor fits", () => {
+    const filler = "word ".repeat(400); // ~500 tokens/message
+    const messages: { role: "user" | "assistant"; content: string }[] = [
+      { role: "user", content: `FIRST-ASK ${filler}` },
+    ];
+    for (let i = 0; i < 9; i++) {
+      messages.push({ role: "assistant", content: `mid-${i} ${filler}` });
+    }
+
+    // Budget below anchor + header + allowance: available hits 0 and no
+    // other message can be retained in any tier.
+    const result = distillConversationContext(contextWith(messages), 600);
+
+    expect(result.text).toContain("FIRST-ASK");
+    expect(result.text).toContain("only fits the original request");
+    expect(result.text).toContain("9 other messages");
+    // The default marker would claim "newest turns verbatim" — false here.
+    expect(result.text).not.toContain("newest turns verbatim");
+    expect(result.omittedMessages).toBe(9);
+  });
 });

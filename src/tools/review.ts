@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import { z } from "zod";
 import { loadConfig, loadReviewInstructions } from "../config.js";
 import {
@@ -9,16 +10,27 @@ import {
   BudgetWarning,
 } from "../context/index.js";
 import { isWithinProject } from "../context/imports.js";
-import { createProvider, ProviderName } from "../providers/index.js";
+import {
+  CODEX_REVIEW_PLACEHOLDER,
+  CodexHandoff,
+  ConsensusResult,
+  ProviderName,
+  ReviewRequest,
+  composeCodexPrompt,
+  createCodexRescueCommand,
+  createProvider,
+  getConsensusReview,
+} from "../providers/index.js";
 import {
   writeReview,
+  writePromptFile,
   writeEgressManifest,
   deriveSessionName,
   ReviewMetadata,
   EgressSummary,
 } from "../output/writer.js";
-import { getRateLimiter, resetRateLimiter } from "../security/rate-limiter.js";
-import { redactSecrets } from "../security/redactor.js";
+import { formatConsensusOutput } from "../output/consensus-formatter.js";
+import { getRateLimiter } from "../security/rate-limiter.js";
 import {
   detectDominantLanguage,
   getLanguageHints,
@@ -54,75 +66,67 @@ function validateProjectPath(projectPath: string): void {
 export const SecondOpinionInputSchema = z.object({
   // Required
   provider: z
-    .enum(["gemini", "openai", "consensus"])
+    .enum(["gemini", "codex", "consensus", "openai"])
+    .transform(
+      (provider): ProviderName => provider === "openai" ? "codex" : provider
+    )
     .describe(
-      "Which LLM to use. 'consensus' calls both Gemini and OpenAI in parallel and returns combined results."
+      "codex = /codex:rescue handoff; consensus = Gemini + Codex handoff; 'openai' is a deprecated alias for 'codex'"
     ),
-  projectPath: z.string().describe("Absolute path to the project being reviewed"),
+  projectPath: z.string().describe("Absolute project path"),
 
   // Task specification
   task: z
     .string()
     .optional()
-    .describe(
-      "The task or prompt for the LLM to accomplish. When omitted, defaults to code review."
-    ),
+    .describe("Replacement deliverable; omit for a standard code review"),
 
   // Context options
   sessionId: z
     .string()
     .optional()
-    .describe("Claude Code session ID (defaults to most recent)"),
+    .describe("Session ID (default: most recent)"),
   includeFiles: z
     .array(z.string())
     .optional()
-    .describe("Additional files or folders to include (supports ~ and relative paths)"),
+    .describe("Additional files/folders (~ and relative paths ok)"),
   allowExternalFiles: z
     .boolean()
     .default(false)
-    .describe(
-      "Allow including files outside the project directory. Required when includeFiles contains paths outside the project. Use with caution as these files will be sent to the external LLM."
-    ),
+    .describe("Permit includeFiles paths outside the project"),
   includeConversation: z
     .boolean()
     .default(true)
-    .describe("Include conversation context from Claude session"),
+    .describe("Include Claude session conversation"),
 
   // Smart context options
   includeDependencies: z
     .boolean()
     .default(true)
-    .describe("Include files imported by modified files"),
+    .describe("Include imported dependencies"),
   includeDependents: z
     .boolean()
     .default(true)
-    .describe("Include files that import modified files"),
-  includeTests: z
-    .boolean()
-    .default(true)
-    .describe("Include corresponding test files"),
+    .describe("Include dependent files"),
+  includeTests: z.boolean().default(true).describe("Include related tests"),
   includeTypes: z
     .boolean()
     .default(true)
-    .describe("Include referenced type definitions"),
+    .describe("Include type definitions"),
   maxInputTokens: z
     .number()
-    .default(200000)
-    .describe("Maximum tokens for context sent to reviewer"),
+    .optional()
+    .describe("Max context tokens (default MAX_CONTEXT_TOKENS, 200000)"),
   maxOutputTokens: z
     .number()
     .optional()
-    .describe(
-      "Maximum tokens for reviewer's response. Defaults to 32768."
-    ),
+    .describe("Max Gemini response tokens (default 32768); ignored for codex"),
 
   // PR options
   prNumber: z
     .number()
     .optional()
-    .describe(
-      "PR number to review. Auto-detects from current branch if omitted."
-    ),
+    .describe("PR number (default: auto-detect from branch)"),
 
   // LLM options
   temperature: z
@@ -130,29 +134,22 @@ export const SecondOpinionInputSchema = z.object({
     .min(0)
     .max(1)
     .optional()
-    .describe(
-      "Temperature for LLM generation (0-1). Lower = more focused, higher = more creative. Defaults to 0.3."
-    ),
+    .describe("Gemini-only temperature 0-1 (default 0.3); ignored for codex"),
 
   // Output options
-  sessionName: z
-    .string()
-    .optional()
-    .describe("Name for this output (used in filename)"),
+  sessionName: z.string().optional().describe("Output filename stem"),
   customPrompt: z
     .string()
     .optional()
-    .describe("Additional instructions (deprecated: use task instead)"),
+    .describe("Deprecated — use task instead"),
   focusAreas: z
     .array(z.string())
     .optional()
-    .describe("Specific areas to focus on (for code reviews)"),
+    .describe("Review focus areas"),
   dryRun: z
     .boolean()
     .default(false)
-    .describe(
-      "If true, return a preview of what would be sent without calling the external API. Use this for confirmation before sending files to external providers."
-    ),
+    .describe("Preview the egress bundle without calling any provider"),
 });
 
 export type SecondOpinionInput = z.infer<typeof SecondOpinionInputSchema>;
@@ -175,6 +172,7 @@ export interface SecondOpinionDryRunOutput {
 
 export interface SecondOpinionOutput {
   dryRun?: false;
+  handoff?: false;
   review: string;
   reviewFile: string;
   egressManifestFile: string;
@@ -185,9 +183,31 @@ export interface SecondOpinionOutput {
   filesReviewed: number;
   contextTokens: number;
   summary: EgressSummary;
+  /** Budget reductions (omitted files, distilled conversation) the caller should know about. */
+  budgetWarnings: BudgetWarning[];
   /** Present when PR detection failed (e.g. gh not installed) */
   prDetectionFailure?: { reason: string; message: string };
 }
+
+export interface SecondOpinionHandoffOutput extends CodexHandoff {
+  dryRun?: false;
+  handoff: true;
+  provider: "codex" | "consensus";
+  filesReviewed: number;
+  contextTokens: number;
+  summary: EgressSummary;
+  /** Budget reductions (omitted files, distilled conversation) the caller should know about. */
+  budgetWarnings: BudgetWarning[];
+  /** Gemini's in-process result when this is a consensus handoff. */
+  gemini?: ConsensusResult["gemini"];
+  /** Present when PR detection failed (e.g. gh not installed) */
+  prDetectionFailure?: { reason: string; message: string };
+}
+
+export type SecondOpinionResult =
+  | SecondOpinionOutput
+  | SecondOpinionHandoffOutput
+  | SecondOpinionDryRunOutput;
 
 /**
  * Build egress summary from bundle, categorizing files as project vs external
@@ -229,9 +249,111 @@ function buildEgressSummary(
   };
 }
 
+function checkGeminiRateLimit(): string | null {
+  const rateLimitStatus = getRateLimiter().checkAndRecord();
+  if (!rateLimitStatus.allowed) {
+    const retryAfterSec = Math.ceil(
+      (rateLimitStatus.retryAfterMs || 0) / 1000
+    );
+    return `Rate limited. Too many requests. Try again in ${retryAfterSec} seconds.`;
+  }
+  return null;
+}
+
+function enforceGeminiRateLimit(): void {
+  const error = checkGeminiRateLimit();
+  if (error) {
+    throw new Error(error);
+  }
+}
+
+/**
+ * POSIX single-quoting for Bash-executed helper commands: project paths may
+ * contain spaces or `$`, and unlike rescueCommand (which a slash-command
+ * forwarder consumes) these commands are run through a shell.
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Absolute path to a compiled helper CLI next to this module. Commands embed
+ * the dist/*.js path because the MCP server runs from dist. Placeholder
+ * tokens (e.g. JOB_ID) must stay metacharacter-free and unquoted.
+ */
+function helperCommand(script: string, quotedArgs: string[]): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const helperPath = path
+    .join(moduleDir, "..", "output", script)
+    .replace(/\.ts$/, ".js");
+  return ["node", shellQuote(helperPath), ...quotedArgs].join(" ");
+}
+
+function writeCodexHandoff(
+  projectPath: string,
+  reviewsDir: string,
+  metadata: ReviewMetadata,
+  summary: EgressSummary,
+  prompt: string,
+  codexModel: string
+): CodexHandoff {
+  const promptFile = writePromptFile(
+    projectPath,
+    reviewsDir,
+    metadata,
+    prompt
+  );
+  const rescueCommand = createCodexRescueCommand(
+    promptFile,
+    codexModel,
+    Boolean(metadata.task)
+  );
+  const placeholderBody = [
+    "## Codex Review",
+    "",
+    "Run the handoff command below, then replace the placeholder with Codex's verbatim final response.",
+    "",
+    "```text",
+    rescueCommand,
+    "```",
+    "",
+    CODEX_REVIEW_PLACEHOLDER,
+  ].join("\n");
+  const reviewFile = writeReview(
+    projectPath,
+    reviewsDir,
+    metadata,
+    placeholderBody
+  );
+  const egressManifestFile = writeEgressManifest(
+    projectPath,
+    reviewsDir,
+    metadata,
+    summary
+  );
+
+  return {
+    promptFile,
+    reviewFile,
+    egressManifestFile,
+    rescueCommand,
+    verifyCommand: helperCommand("verify-review.js", [shellQuote(reviewFile)]),
+    // --expect binds the splice to THIS handoff: a later handoff reusing the
+    // sessionName regenerates the same reviewFile path, and without the
+    // binding an older job's output would silently land in the new document.
+    spliceCommand: helperCommand("splice-codex-result.js", [
+      "JOB_ID",
+      "--expect",
+      shellQuote(metadata.timestamp),
+      shellQuote(reviewFile),
+    ]),
+    model: codexModel,
+  };
+}
+
 export async function executeReview(
   input: SecondOpinionInput
-): Promise<SecondOpinionOutput | SecondOpinionDryRunOutput> {
+): Promise<SecondOpinionResult> {
   // Validate project path before proceeding
   validateProjectPath(input.projectPath);
 
@@ -248,20 +370,18 @@ export async function executeReview(
     includeDependents: input.includeDependents,
     includeTests: input.includeTests,
     includeTypes: input.includeTypes,
-    maxTokens: input.maxInputTokens,
+    // Input wins, then MAX_CONTEXT_TOKENS config (default 200000). The zod
+    // input default used to shadow the config value entirely.
+    maxTokens: input.maxInputTokens ?? config.maxContextTokens,
     prNumber: input.prNumber,
   });
 
-  // Resolve provider early for dry run — consensus falls back to single provider
-  let effectiveProvider = input.provider as ProviderName;
-  if (effectiveProvider === "consensus") {
-    if (!config.geminiApiKey && !config.openaiApiKey) {
-      throw new Error("At least one API key (GEMINI_API_KEY or OPENAI_API_KEY) is required");
-    }
-    if (!config.geminiApiKey || !config.openaiApiKey) {
-      effectiveProvider = config.geminiApiKey ? "gemini" : "openai";
-    }
-  }
+  // Consensus needs Gemini for its in-process half. Without a Gemini key it
+  // degrades to the always-available Codex handoff.
+  const effectiveProvider: ProviderName =
+    input.provider === "consensus" && !config.geminiApiKey
+      ? "codex"
+      : input.provider;
 
   // Build egress summary (used for both dry run and actual execution)
   const summary = buildEgressSummary(bundle, input.projectPath, effectiveProvider);
@@ -282,37 +402,31 @@ export async function executeReview(
     };
   }
 
-  // 3. Check rate limit before calling external API
-  const rateLimiter = getRateLimiter();
-  const rateLimitStatus = rateLimiter.checkAndRecord();
-  if (!rateLimitStatus.allowed) {
-    const retryAfterSec = Math.ceil((rateLimitStatus.retryAfterMs || 0) / 1000);
-    throw new Error(
-      `Rate limited. Too many requests. Try again in ${retryAfterSec} seconds.`
-    );
-  }
-
-  // 4. Format as markdown
+  // 3. Format as markdown
   const contextMarkdown = formatBundleAsMarkdown(bundle, input.projectPath);
 
-  // 5. Load review instructions
-  const instructions = loadReviewInstructions(input.projectPath);
+  // 4. Load review instructions. Replacement tasks (input.task) get a
+  // self-contained task prompt: the review methodology and language pitfall
+  // hints are review apparatus and are not sent with non-review deliverables.
+  const instructions = input.task
+    ? ""
+    : loadReviewInstructions(input.projectPath);
 
-  // 6. Determine temperature (input > config > default)
+  // 5. Determine Gemini generation options (input > config > default).
+  // Codex receives neither temperature nor output-token CLI flags.
   const temperature = input.temperature ?? config.temperature;
 
-  // 6a. Detect dominant language and get hints
-  const dominantLang = detectDominantLanguage(
-    bundle.files.map((f) => f.path)
-  );
+  // 5a. Detect dominant language and get hints (review mode only)
+  const dominantLang = input.task
+    ? null
+    : detectDominantLanguage(bundle.files.map((f) => f.path));
   const languageHints =
     dominantLang ? getLanguageHints(dominantLang) : undefined;
 
-  // 7. Determine maxOutputTokens (input > config > default)
+  // 6. Determine maxOutputTokens (input > config > default)
   const maxOutputTokens = input.maxOutputTokens ?? config.maxOutputTokens;
 
-  const provider = createProvider(effectiveProvider, config);
-  const response = await provider.review({
+  const reviewRequest: ReviewRequest = {
     instructions,
     context: contextMarkdown,
     task: input.task,
@@ -322,18 +436,112 @@ export async function executeReview(
     languageHints: languageHints || undefined,
     maxOutputTokens,
     branchDiff: bundle.branchDiff,
-  });
+  };
 
-  // 9. Derive session name if not provided
+  // 7. Derive session name if not provided
   const sessionName =
     input.sessionName ||
     deriveSessionName(bundle.conversationContext, "code-review");
 
-  // 10. Write the output files
+  // 8. Prepare shared metadata
   const timestamp = new Date().toISOString();
+
+  if (effectiveProvider === "codex") {
+    const metadata: ReviewMetadata = {
+      sessionName,
+      provider: "codex",
+      model: config.codexModel,
+      timestamp,
+      filesReviewed: bundle.files.map((f) => f.path),
+      task: input.task,
+    };
+    const handoff = writeCodexHandoff(
+      input.projectPath,
+      config.reviewsDir,
+      metadata,
+      summary,
+      composeCodexPrompt(reviewRequest),
+      config.codexModel
+    );
+
+    return {
+      dryRun: false,
+      handoff: true,
+      provider: "codex",
+      ...handoff,
+      filesReviewed: bundle.files.length,
+      contextTokens: bundle.totalTokens,
+      summary,
+      budgetWarnings: bundle.budgetWarnings,
+      prDetectionFailure: bundle.prDetectionFailure,
+    };
+  }
+
+  if (effectiveProvider === "consensus") {
+    const metadata: ReviewMetadata = {
+      sessionName,
+      provider: "consensus",
+      model: `Gemini ${config.geminiModel} + Codex ${config.codexModel}`,
+      timestamp,
+      filesReviewed: bundle.files.map((f) => f.path),
+      task: input.task,
+    };
+    // The Codex handoff consumes no Gemini quota, so it is written before the
+    // rate-limit check; a quota trip degrades to gemini.error like any other
+    // Gemini failure instead of destroying the handoff.
+    const handoff = writeCodexHandoff(
+      input.projectPath,
+      config.reviewsDir,
+      metadata,
+      summary,
+      composeCodexPrompt(reviewRequest),
+      config.codexModel
+    );
+    const rateLimitError = checkGeminiRateLimit();
+    const consensus = rateLimitError
+      ? {
+          gemini: {
+            review: "",
+            model: config.geminiModel,
+            error: rateLimitError,
+          },
+          codex: handoff,
+        }
+      : await getConsensusReview(reviewRequest, config, handoff);
+    // Two-phase write: writeCodexHandoff already wrote a Codex-only placeholder
+    // body, which stays behind as a valid degraded file if the Gemini call
+    // dies mid-flight; this overwrite upgrades it to the full consensus layout.
+    writeReview(
+      input.projectPath,
+      config.reviewsDir,
+      metadata,
+      formatConsensusOutput(consensus, {
+        task: input.task,
+        sessionName,
+      })
+    );
+
+    return {
+      dryRun: false,
+      handoff: true,
+      provider: "consensus",
+      ...handoff,
+      filesReviewed: bundle.files.length,
+      contextTokens: bundle.totalTokens,
+      summary,
+      budgetWarnings: bundle.budgetWarnings,
+      gemini: consensus.gemini,
+      prDetectionFailure: bundle.prDetectionFailure,
+    };
+  }
+
+  const provider = createProvider("gemini", config);
+  enforceGeminiRateLimit();
+  const response = await provider.review(reviewRequest);
+
   const metadata: ReviewMetadata = {
     sessionName,
-    provider: effectiveProvider,
+    provider: "gemini",
     model: response.model,
     timestamp,
     filesReviewed: bundle.files.map((f) => f.path),
@@ -348,7 +556,7 @@ export async function executeReview(
     response.review
   );
 
-  // 11. Write egress manifest for audit trail
+  // 9. Write egress manifest for audit trail
   const egressManifestFile = writeEgressManifest(
     input.projectPath,
     config.reviewsDir,
@@ -368,6 +576,7 @@ export async function executeReview(
     filesReviewed: bundle.files.length,
     contextTokens: bundle.totalTokens,
     summary,
+    budgetWarnings: bundle.budgetWarnings,
     prDetectionFailure: bundle.prDetectionFailure,
   };
 }

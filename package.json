@@ -1,15 +1,14 @@
 {
   "name": "second-opinion-mcp",
   "version": "0.6.0",
-  "description": "MCP server for getting code reviews from Gemini/GPT in Claude Code",
+  "description": "MCP server for getting code reviews from Gemini and Codex in Claude Code",
   "keywords": [
     "mcp",
     "claude",
     "claude-code",
     "code-review",
     "gemini",
-    "openai",
-    "gpt"
+    "codex"
   ],
   "license": "MIT",
   "repository": {
@@ -49,8 +48,8 @@
     "@google/generative-ai": "^0.21.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "glob": "^11.0.0",
-    "openai": "^4.77.0",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@release-it/bumper": "^7.0.5",

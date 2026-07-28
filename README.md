@@ -1,275 +1,201 @@
 # Second Opinion
 
-Get code reviews and feedback from Gemini or GPT while working in Claude Code.
+Get code reviews and feedback from Gemini and Codex while working in Claude Code.
 
-Second Opinion is an MCP server that automatically collects context from your Claude Code session—files you've read, edited, and their dependencies—and sends it to another LLM for review. No copy-pasting, no context switching.
+Second Opinion is an MCP server plus a Claude Code skill. It collects the files, conversation context, dependencies, tests, types, and branch diff relevant to your current work. Gemini reviews that bundle through its API. Codex reviews it through a local handoff: the tool exports a self-contained prompt, and the skill runs the OpenAI Codex Claude Code plugin using your ChatGPT-plan authentication.
+
+The MCP server does not call the OpenAI API and does not require an OpenAI API key.
+
+## Requirements
+
+- Node.js 18+
+- Claude Code CLI
+- Codex CLI, authenticated with a ChatGPT plan (`codex login`)
+- The `openai-codex` Claude Code plugin, which provides `/codex:rescue`
+- `GEMINI_API_KEY` only if you want Gemini or full consensus mode
+- [GitHub CLI (`gh`)](https://cli.github.com/) — optional, for pull-request context detection
 
 ## Quick Start
 
+Install and authenticate Codex:
+
 ```bash
-# Add to Claude Code (one command)
+npm install -g @openai/codex
+codex login
+```
+
+In Claude Code, install the OpenAI Codex plugin:
+
+```text
+/plugin marketplace add openai/codex-plugin-cc
+/plugin install codex@openai-codex
+/reload-plugins
+/codex:setup
+```
+
+Add Second Opinion. Codex-only use needs no API key:
+
+```bash
+claude mcp add second-opinion -- npx second-opinion-mcp
+```
+
+To enable Gemini and full consensus mode:
+
+```bash
 claude mcp add second-opinion \
   -e GEMINI_API_KEY="$(cat ~/.secrets/gemini-key)" \
   -- npx second-opinion-mcp
 ```
 
-Then in Claude Code:
+Then run this in Claude Code:
 
-```
+```text
 /second-opinion
 ```
 
-That's it. The review appears in `second-opinions/`.
+The completed review appears in `second-opinions/`.
 
-## How It Works
+## Providers
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Claude Code                               │
-│                                                                  │
-│  You: "Add user authentication"                                  │
-│  Claude: [reads files, writes code, runs tests]                  │
-│  You: "/second-opinion"                                          │
-│                                                                  │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Second Opinion MCP                            │
-│                                                                  │
-│  1. Parse Claude Code session logs                               │
-│  2. Collect files read/written + their content                   │
-│  3. Resolve dependencies and dependents                          │
-│  4. Find related tests and types                                 │
-│  5. Collect branch diff (feature branch vs base)                 │
-│  6. Bundle within token budget                                   │
-│  7. Send to Gemini + GPT (consensus mode)                        │
-│  8. Write response to second-opinions/                           │
-│                                                                  │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│          second-opinions/add-auth.consensus.review.md            │
-│                                                                  │
-│  # Consensus Code Review                                         │
-│                                                                  │
-│  ## Synthesis                                                    │
-│  [Claude merges both perspectives with full context]             │
-│                                                                  │
-│  ## Gemini's Review                                              │
-│  [BLOCKING] Missing rate limiting on login endpoint              │
-│                                                                  │
-│  ## OpenAI's Review                                              │
-│  [SUGGESTION] Consider adding refresh token rotation             │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+| Provider | Behavior | Authentication |
+|----------|----------|----------------|
+| `codex` | Exports a prompt and returns a `/codex:rescue` handoff for the skill to complete | Local Codex CLI authenticated with `codex login` and a ChatGPT plan |
+| `gemini` | Calls Gemini in-process and writes the completed review | `GEMINI_API_KEY` |
+| `consensus` | Gets Gemini's review, prepares the Codex handoff, then has Claude synthesize both | Gemini key plus Codex CLI; without a Gemini key, degrades to Codex-only |
+| `openai` | Deprecated input alias that normalizes to `codex` | Same as `codex`; no OpenAI API call |
+
+The default provider is `consensus`.
+
+## How the Codex Handoff Works
+
+Codex reviews are deliberately orchestrated at the skill layer so long, ultra-effort runs are not constrained by an MCP tool-call timeout:
+
+1. The `second_opinion` tool collects and redacts context.
+2. It writes a self-contained `*.prompt.md`, a review file containing a clearly marked placeholder, and an `.egress.json` audit manifest.
+3. It returns a handoff descriptor containing `promptFile`, `reviewFile`, `egressManifestFile`, `model`, and `rescueCommand`.
+4. The `/second-opinion` skill invokes the returned `/codex:rescue` command. Before the task text, it inserts `--wait` for a small bundle, or `--background` for a large bundle and follows it with `/codex:status` and `/codex:result`.
+5. The skill pastes Codex's final message verbatim into `reviewFile`, replacing the Codex placeholder.
+6. In consensus mode, the file already contains Gemini's review. After inserting Codex's review, Claude replaces the `## Synthesis` placeholder with a unified assessment.
+
+A returned command has this form:
+
+```text
+/codex:rescue --model gpt-5.6-sol --fresh Read the complete review prompt at /absolute/path/to/review.prompt.md. Follow every instruction in it. Produce the full review markdown as your final message. This is a read-only task; modify no files.
 ```
 
-## Features
+Do not add `--effort`. Reasoning effort is intentionally not configurable by Second Opinion. Omitting the flag inherits `model_reasoning_effort = "ultra"` from `~/.codex/config.toml`; the explicit values accepted by the plugin top out at `xhigh` and would downgrade the review.
 
-### Automatic Context Collection
+The tool never asks Codex to edit the project. The exported prompt explicitly makes the run read-only and asks for the complete review Markdown as the final message.
 
-Your session is the context. Second Opinion reads it automatically:
+## Usage
 
-- **Session files** — Files you read, edited, or created
-- **Conversation** — What you asked Claude to do
-- **Dependencies** — Files imported by your modified code
-- **Dependents** — Files that import your modified code
-- **Tests** — Test files related to your changes
-- **Types** — TypeScript/JSDoc type definitions
-- **Pull request** — PR metadata, comments, reviews, and changed files (requires `gh` CLI)
-
-### Custom Tasks
-
-Don't just get code reviews—ask for anything:
-
-```
-/second-opinion Evaluate the error handling strategy across this codebase
-
-/second-opinion Write user documentation for the API changes
-
-/second-opinion openai Identify potential performance bottlenecks
+```text
+/second-opinion                                  # Consensus (default)
+/second-opinion codex Review this                # Codex handoff only
+/second-opinion gemini Review this               # Gemini API only
+/second-opinion consensus Security audit this    # Gemini + Codex + synthesis
+/second-opinion openai Review this               # Deprecated alias for codex
 ```
 
-### Consensus & Providers
+Custom text normally augments the standard review methodology:
 
-By default, Second Opinion calls both Gemini and OpenAI in parallel. Claude then synthesizes the findings using its full session context—merging agreements, surfacing unique insights, and resolving disagreements.
-
-```
-/second-opinion                        # Consensus (default) — both providers
-/second-opinion gemini Review this     # Gemini only
-/second-opinion openai Review this     # GPT only
+```text
+/second-opinion Evaluate error handling consistency and find swallowed errors
 ```
 
-Consensus mode:
-- Calls both providers simultaneously
-- Claude synthesizes findings using the unified review framework
-- **Smart fallback**: if only one API key is configured, uses that single provider
+For a genuinely different deliverable, the skill sends the text as a replacement task. Task prompts are self-contained: the code-review methodology and language checklists are not sent with them:
 
-### Diff-Scoped Reviews
-
-On feature branches, Second Opinion automatically includes the git diff (branch vs base). Reviewers distinguish issues introduced by your changes from pre-existing issues in the codebase:
-
-- **Findings** — Issues in the diff (your changes)
-- **Pre-existing Issues** — Legitimate issues NOT introduced by this change (lower priority)
-
-### Smart Token Budgeting
-
-Context is prioritized by category: explicitly included files first, then session files, git changes, dependencies, dependents, tests, and type definitions. Unused budget spills over to later categories. Files that don't fit are listed so you know what was omitted.
-
-### Include Additional Files
-
-Reference files outside your session:
-
+```text
+/second-opinion codex Write a migration guide for the changes in this session
 ```
+
+You can also include another file:
+
+```text
 /second-opinion The previous review at reviews/initial.md has been addressed. Verify the fixes.
 ```
 
-## Examples
+### Consensus Mode
 
-### Basic Code Review
+With a Gemini key configured, one tool call gets Gemini's review in-process and prepares the Codex handoff. The skill completes Codex's run, inserts the result verbatim, and writes the synthesis using its richer conversation context.
 
-```
-> /second-opinion
+The synthesis:
 
-Consensus review complete! Written to second-opinions/add-auth-flow.consensus.review.md
-- Analyzed 14 files (52,000 tokens)
-- Key findings: [BLOCKING] Missing input validation in login handler,
-  [IMPORTANT] Consider rate limiting for auth endpoints
-```
+- merges and deduplicates findings;
+- notes agreement, disagreement, and reviewer provenance;
+- preserves severity labels and evidence requirements;
+- separates diff-introduced findings from pre-existing issues;
+- resolves defensive recommendations at the highest useful architectural boundary; and
+- combines questions, upstream/downstream opportunities, and praise.
 
-### Security Audit
+Without `GEMINI_API_KEY`, consensus degrades to a Codex-only handoff.
 
-```
-> /second-opinion openai Audit this code for security vulnerabilities.
-  Focus on authentication, input validation, and data exposure.
+### Temperature
 
-Analysis complete! Written to second-opinions/add-auth-flow.openai.security-audit.md
-```
+Temperature is a Gemini-only setting. It is ignored by `codex`; in `consensus` it affects only the Gemini call.
 
-### Architecture Review
-
-```
-> /second-opinion Evaluate the architecture of this feature.
-  Is the separation of concerns appropriate? Are there any circular dependencies?
+```text
+/second-opinion gemini temp=0.8 Explore alternative designs
+/second-opinion consensus temp=0.1 Perform a strict security audit
 ```
 
-### Documentation Generation
+Codex reasoning quality is controlled by the handoff's model and the inherited ultra reasoning effort, not temperature.
 
-```
-> /second-opinion Write API documentation for the changes made in this session.
-  Include request/response examples.
-```
+## Context Collection
 
-### Single Provider
+Your session supplies the context:
 
-When you want one model's perspective:
+- **Session files** — files read, edited, or created
+- **Conversation** — what you asked Claude to do
+- **Dependencies** — files imported by modified code
+- **Dependents** — files that import modified code
+- **Tests** — related test files
+- **Types** — TypeScript/JSDoc type definitions
+- **Branch diff** — feature branch versus its base
+- **Pull request** — PR metadata, comments, reviews, and changed files when `gh` is available
 
-```
-> /second-opinion gemini Review this implementation
-> /second-opinion openai Review this implementation
-```
-
-### Configurable Temperature
-
-Control creativity vs. focus:
-
-```
-> /second-opinion temp=0.8 Creative suggestions for improving UX
-> /second-opinion temp=0.1 Strict security audit
-```
+Context is prioritized by category and fitted into the token budget. Explicitly included files come first, followed by session files, git changes, dependencies, dependents, tests, and types. The dry-run result and completed egress manifest show what was included, omitted, or blocked.
 
 ## Security
 
-Second Opinion implements multiple layers of protection:
+### What Leaves the Project
 
-### What Data Is Sent
+For Gemini, the MCP server sends the redacted bundle to the Gemini API. For Codex, the MCP server writes the redacted bundle into the local prompt file; the Codex CLI then reads it and sends the review request using its own ChatGPT-plan authentication.
 
-When you use Second Opinion, the following data may be sent to the external LLM (Gemini or OpenAI):
+The bundle may contain:
 
-- **File contents**: Source code from your project and any explicitly included files
-- **Conversation context**: A summary of your Claude Code session (what you asked, not your full chat history)
-- **File metadata**: File paths relative to your project
+- source files from the project and any explicitly approved external files;
+- the session conversation — long histories are deterministically distilled (newest turns verbatim, older turns condensed to excerpts, oldest outlined) to fit a budget of 10% of `maxInputTokens`; and
+- project-relative file metadata.
 
-The tool does NOT send:
-- Your API keys
-- System files or shell history
-- Files blocked by sensitive path patterns
+It does not include blocked sensitive files, system files, shell history, or unredacted secrets detected by the scanner.
 
 ### Sensitive Path Blocking
 
-The following paths are always blocked, even when explicitly requested:
+Sensitive locations and file types are blocked even when explicitly requested, including:
 
-- SSH keys and config (`~/.ssh/`)
-- AWS credentials (`~/.aws/`)
-- GPG keys (`~/.gnupg/`)
-- Cloud configs (`~/.config/gcloud/`, `~/.kube/`)
-- Git internals (`/.git/`)
-- Auth files (`.netrc`, `.npmrc`, `.pypirc`)
-- Private keys (`*.pem`, `*.key`, `id_rsa`, `id_ed25519`)
-- Service account credentials
-- Environment files (`.env`, `.env.local`, `.env.production`)
-- Terraform secrets (`.tfvars`, `terraform.tfstate`)
-- Kubernetes secrets (`secret.yaml`, `secret.yml`)
-- Shell history (`.bash_history`, `.zsh_history`)
+- SSH, AWS, GPG, cloud, and Kubernetes credentials
+- git internals and authentication files
+- private keys and service-account credentials
+- `.env` variants, Terraform state/secrets, and shell history
 
-### External File Protection
-
-By default, files outside your project directory are blocked. If you need to include external files, you must explicitly set `allowExternalFiles: true`. This prevents accidental exfiltration of files from other projects or system locations.
-
-### Symlink Protection
-
-All paths are resolved via `realpathSync()` before reading. A symlink pointing to `~/.ssh/id_rsa` will be blocked even if it lives inside your project.
-
-### Output Directory Validation
-
-Reviews are only written within your project directory. Path traversal attempts (e.g., `../../../etc/passwd`) are rejected.
-
-### Egress Audit Trail
-
-Every review creates a companion `.egress.json` file that records:
-- Exactly which files were sent to the external LLM
-- Which files were blocked and why
-- Timestamp and provider information
-
-This allows you to audit what data left your system.
+All paths are resolved before reading, so a symlink cannot bypass these protections. External files are blocked by default and require `allowExternalFiles: true`.
 
 ### Secret Redaction
 
-Second Opinion automatically scans file content for secrets before sending to external LLMs:
+Second Opinion scans content for API keys, access tokens, JWTs, database URLs, private keys, passwords, basic-auth URLs, and similar secrets. Matches become `[REDACTED:type]`. This is a safety net, not a replacement for secret management.
 
-**Detected and redacted:**
-- API keys (OpenAI `sk-...`, AWS `AKIA...`, GitHub `ghp_...`, Stripe `sk_live_...`)
-- JWT tokens
-- Database connection strings
-- Private keys (PEM format)
-- Generic secrets/passwords in assignment format
-- Basic auth in URLs
-- Slack tokens
+Every non-dry-run creates an `.egress.json` manifest recording the provider, model, files included, external paths, and blocked files. The tool result echoes only counts (files sent, blocked, redactions) plus the manifest path; dry-run results retain the full path-level detail because they are the confirmation surface before anything leaves the machine.
 
-Redacted content appears as `[REDACTED:type]` (e.g., `[REDACTED:api_key]`) in the output sent to the external LLM. The egress manifest records how many secrets were redacted and their types.
+### Output Directory Validation
 
-**Note:** This is a safety net, not a replacement for proper secret management. Sensitive paths like `.env` files are still blocked entirely.
+`REVIEWS_DIR` must be a relative path and may not contain `..` traversal; absolute paths and values that resolve outside the project are rejected before anything is written. Review, prompt, and manifest files therefore always land inside the project.
 
-### API Key Safety
+### Prompt File Retention
 
-Never paste API keys directly in the terminal—they get saved to shell history. Instead:
+Codex handoffs persist the complete redacted bundle on disk as `second-opinions/<name>.prompt.md`. Keep `second-opinions/` in your project's `.gitignore` (this repository already ignores it), and delete prompt files after the review is pasted if you do not want the bundled context to linger.
 
-```bash
-# Read from a file
-export GEMINI_API_KEY=$(cat ~/.secrets/gemini-key)
-
-# Use a password manager
-export OPENAI_API_KEY=$(op read "op://Private/OpenAI/api-key")
-
-# Set via MCP config
-claude mcp add second-opinion \
-  -e GEMINI_API_KEY="$(cat ~/.secrets/gemini-key)" \
-  -- npx second-opinion-mcp
-```
-
-**Never paste API keys directly in Claude Code chat.** Keys in chat messages could be logged or sent to external providers.
+Only Gemini needs an API key. Do not paste `GEMINI_API_KEY` into Claude Code chat or directly into a shell command that will be saved in history; load it from a protected file or password manager.
 
 ## Configuration
 
@@ -277,17 +203,17 @@ claude mcp add second-opinion \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GEMINI_API_KEY` | — | API key for Google Gemini |
-| `OPENAI_API_KEY` | — | API key for OpenAI |
-| `GEMINI_MODEL` | `gemini-pro-latest` | Gemini model to use |
-| `OPENAI_MODEL` | `gpt-5.5` | OpenAI model to use |
-| `DEFAULT_PROVIDER` | `consensus` | Default provider (`gemini`, `openai`, or `consensus`) |
-| `MAX_CONTEXT_TOKENS` | `200000` | Maximum tokens for context |
-| `MAX_OUTPUT_TOKENS` | `32768` | Maximum tokens for reviewer's response |
-| `TEMPERATURE` | `0.3` | Default LLM temperature (0-1) |
-| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window (1 minute) |
-| `RATE_LIMIT_MAX_REQUESTS` | `10` | Max requests per window |
-| `REVIEWS_DIR` | `second-opinions` | Output directory (relative to project) |
+| `GEMINI_API_KEY` | — | Enables Gemini and full consensus mode |
+| `GEMINI_MODEL` | `gemini-pro-latest` | Gemini model |
+| `CODEX_MODEL` | `gpt-5.6-sol` | Model placed in the Codex handoff command |
+| `MAX_CONTEXT_TOKENS` | `200000` | Default context-bundle token budget; a per-call `maxInputTokens` overrides it |
+| `MAX_OUTPUT_TOKENS` | `32768` | Maximum Gemini response tokens |
+| `TEMPERATURE` | `0.3` | Gemini-only generation temperature |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Gemini API rate-limit window |
+| `RATE_LIMIT_MAX_REQUESTS` | `10` | Gemini calls allowed per window |
+| `REVIEWS_DIR` | `second-opinions` | Output directory relative to the project |
+
+There is no `OPENAI_API_KEY` or `OPENAI_MODEL` setting. Codex authentication belongs to the local CLI. Reasoning effort also has no environment or tool setting: generated rescue commands intentionally omit `--effort` so the CLI inherits ultra.
 
 ### Config File
 
@@ -295,11 +221,9 @@ Create `~/.config/second-opinion/config.json`:
 
 ```json
 {
-  "geminiApiKey": "your-key",
-  "openaiApiKey": "your-key",
-  "defaultProvider": "consensus",
+  "geminiApiKey": "optional-gemini-key",
   "geminiModel": "gemini-pro-latest",
-  "openaiModel": "gpt-5.5",
+  "codexModel": "gpt-5.6-sol",
   "maxContextTokens": 200000,
   "maxOutputTokens": 32768,
   "temperature": 0.3,
@@ -309,55 +233,33 @@ Create `~/.config/second-opinion/config.json`:
 }
 ```
 
-Environment variables take precedence over the config file.
+Environment variables take precedence.
 
 ### Custom Review Instructions
 
-Create `~/.config/second-opinion/second-opinion.md` for global instructions, or `second-opinion.md` in your project root for project-specific instructions:
-
-```markdown
-# Review Instructions
-
-Focus on:
-- Security vulnerabilities (OWASP Top 10)
-- Performance implications
-- Error handling completeness
-- Test coverage gaps
-
-Our stack: TypeScript, React, PostgreSQL
-Coding standards: Airbnb style guide
-```
+Create `~/.config/second-opinion/second-opinion.md` for global instructions, or `second-opinion.md` in a project root for project-specific instructions.
 
 ## Tool Parameters
 
-When calling the MCP tool directly:
-
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `provider` | Yes | — | `"gemini"`, `"openai"`, or `"consensus"` (falls back to single provider if only one key configured) |
-| `projectPath` | Yes | — | Absolute path to project |
-| `task` | No | — | Custom prompt (defaults to code review) |
+| `provider` | Yes | — | `gemini`, `codex`, or `consensus`; deprecated `openai` normalizes to `codex` |
+| `projectPath` | Yes | — | Absolute project path |
+| `task` | No | — | Replacement-mode task; omit for a standard review |
 | `sessionId` | No | latest | Claude Code session ID |
-| `sessionName` | No | auto | Name for output file |
-| `includeFiles` | No | — | Additional files/folders to include |
-| `allowExternalFiles` | No | `false` | Allow files outside project |
-| `dryRun` | No | `false` | Preview without calling external API |
-| `includeConversation` | No | `true` | Include conversation context |
+| `sessionName` | No | auto | Output filename stem |
+| `includeFiles` | No | — | Additional files or directories |
+| `allowExternalFiles` | No | `false` | Permit explicitly named files outside the project |
+| `dryRun` | No | `false` | Preview egress without an API call or Codex handoff execution |
+| `includeConversation` | No | `true` | Include session conversation context |
 | `includeDependencies` | No | `true` | Include imported files |
 | `includeDependents` | No | `true` | Include importing files |
-| `includeTests` | No | `true` | Include test files |
-| `includeTypes` | No | `true` | Include type definitions |
+| `includeTests` | No | `true` | Include related tests |
+| `includeTypes` | No | `true` | Include referenced types |
 | `maxInputTokens` | No | `200000` | Context token budget |
-| `maxOutputTokens` | No | `32768` | Max tokens for reviewer's response |
-| `temperature` | No | `0.3` | LLM temperature (0-1) |
-| `focusAreas` | No | — | Specific areas to focus on |
-
-## Requirements
-
-- Node.js 18+
-- Claude Code CLI
-- At least one API key (Gemini or OpenAI)
-- [GitHub CLI (`gh`)](https://cli.github.com/) — optional, required for PR context detection
+| `maxOutputTokens` | No | `32768` | Gemini response limit; ignored by Codex |
+| `temperature` | No | `0.3` | Gemini-only temperature; ignored by Codex |
+| `focusAreas` | No | — | Extra points inside the standard review methodology |
 
 ## License
 
