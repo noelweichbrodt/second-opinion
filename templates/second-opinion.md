@@ -38,6 +38,7 @@ Now examine the code for:
 - **Performance**: Obvious inefficiencies, N+1 queries, unbounded operations
 - **Error handling**: Are errors handled, propagated, and surfaced appropriately?
 - **Edge cases**: Empty inputs, concurrent access, boundary conditions
+- **Simplicity**: Is this the shortest expression that works? See *Simplicity* below
 
 **When a branch diff is provided (`<branch-diff>`):**
 
@@ -62,6 +63,23 @@ Before finalizing your findings, interrogate each one:
      *Triage Defensive Findings to the Right Altitude* (below) before reporting
 
 This forces grounding. Do not skip this step.
+
+---
+
+## Simplicity
+
+Strive and fight for the shortest possible expression. Simplify ruthlessly. Do not
+accept complexity. Lines of code is the biggest code smell.
+
+- Judge every change by what it removes as much as by what it adds. A fix that
+  deletes code outranks one that adds a branch, a guard, or a layer.
+- If simplicity implicates further refactoring of existing code, call for it. Do
+  not accept complexity because the code it would remove predates the diff; report
+  refactors outside the diff under *Upstream/Downstream Opportunities*.
+- Prefer self-documenting code: names and structure that make comments
+  unnecessary. Comments should document ambiguity or subtleties plainly. Flag
+  comments that restate the code, and code that needs a comment to be understood.
+- Hold the fixes you propose to the same standard.
 
 ---
 
