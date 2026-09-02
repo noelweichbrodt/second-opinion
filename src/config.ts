@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 
 export const ConfigSchema = z.object({
   geminiApiKey: z.string().optional(),
-  geminiModel: z.string().default("gemini-pro-latest"),
+  geminiModel: z.string().default("gemini-flash-latest"),
   codexModel: z.string().default("gpt-5.6-sol"),
   maxContextTokens: z.number().default(200000),
   /** Maximum output tokens for LLM response generation */

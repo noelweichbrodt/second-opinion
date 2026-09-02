@@ -204,7 +204,7 @@ Only Gemini needs an API key. Do not paste `GEMINI_API_KEY` into Claude Code cha
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GEMINI_API_KEY` | — | Enables Gemini and full consensus mode |
-| `GEMINI_MODEL` | `gemini-pro-latest` | Gemini model |
+| `GEMINI_MODEL` | `gemini-flash-latest` | Gemini model |
 | `CODEX_MODEL` | `gpt-5.6-sol` | Model placed in the Codex handoff command |
 | `MAX_CONTEXT_TOKENS` | `200000` | Default context-bundle token budget; a per-call `maxInputTokens` overrides it |
 | `MAX_OUTPUT_TOKENS` | `32768` | Maximum Gemini response tokens |
@@ -222,7 +222,7 @@ Create `~/.config/second-opinion/config.json`:
 ```json
 {
   "geminiApiKey": "optional-gemini-key",
-  "geminiModel": "gemini-pro-latest",
+  "geminiModel": "gemini-flash-latest",
   "codexModel": "gpt-5.6-sol",
   "maxContextTokens": 200000,
   "maxOutputTokens": 32768,

@@ -98,7 +98,7 @@ describe("loadConfig", () => {
   it("applies schema defaults when no config provided", () => {
     const config = loadConfig();
 
-    expect(config.geminiModel).toBe("gemini-pro-latest");
+    expect(config.geminiModel).toBe("gemini-flash-latest");
     expect(config.codexModel).toBe("gpt-5.6-sol");
     expect(config.maxContextTokens).toBe(200000);
     expect(config.maxOutputTokens).toBe(32768);

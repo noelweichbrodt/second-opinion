@@ -12,7 +12,7 @@ export class GeminiProvider implements ReviewProvider {
   private client: GoogleGenerativeAI;
   private model: string;
 
-  constructor(apiKey: string, model: string = "gemini-pro-latest") {
+  constructor(apiKey: string, model: string) {
     this.client = new GoogleGenerativeAI(apiKey);
     this.model = model;
   }
