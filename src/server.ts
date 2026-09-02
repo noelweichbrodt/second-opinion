@@ -93,8 +93,7 @@ export function createServer(): Server {
           name: "second_opinion",
           description:
             `External review from Gemini (in-process), Codex (a /codex:rescue handoff), or both (consensus). Available: ${providerList}. ` +
-            "Bundles session context and related code; writes the review file and egress manifest. " +
-            "Complete codex/consensus handoffs per the /second-opinion skill.",
+            "Bundles context and code; writes review and egress files. Complete handoffs via /second-opinion.",
           inputSchema: buildToolInputSchema(),
         },
       ],

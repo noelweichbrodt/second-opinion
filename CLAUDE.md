@@ -2,7 +2,7 @@
 
 MCP server + `/second-opinion` skill: external reviews from Gemini (API, in-process) and Codex (handoff to the local Codex CLI via the openai-codex plugin, ChatGPT-plan auth). The server never calls the OpenAI API.
 
-Operational flow and options live in `second-opinion.skill.md` (installed to `~/.claude/commands/second-opinion.md`). Setup and configuration live in `README.md`.
+Flow and options live in `second-opinion.skill.md` (installed to `~/.claude/commands/second-opinion.md`). Setup and configuration live in `README.md`.
 
 Commands: `npm test` (vitest) · `npm run build` (tsc + installs config).
 

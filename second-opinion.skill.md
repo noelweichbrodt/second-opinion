@@ -8,7 +8,7 @@ user-invocable: true
 
 Gemini runs through its API. Codex is a handoff: the MCP tool exports a complete prompt and this skill runs `/codex:rescue` (openai-codex plugin, ChatGPT-plan auth). The MCP server never calls the OpenAI API.
 
-`/second-opinion [gemini|codex|consensus] [focus or task]` — provider defaults to `consensus` (Gemini + Codex; degrades to Codex-only without `GEMINI_API_KEY`). `openai` is a deprecated alias for `codex`.
+`/second-opinion [gemini|codex|consensus] [focus or task]`. Provider defaults to `consensus` (Gemini in-process plus the Codex handoff; Codex-only without `GEMINI_API_KEY`). `openai` is a deprecated alias for `codex`.
 
 ## 1. Parse and Classify
 
@@ -21,7 +21,7 @@ Gemini runs through its API. Codex is a handoff: the MCP tool exports a complete
    - When uncertain, augment.
 5. Derive a descriptive `sessionName`; in augment mode include the focus.
 
-Temperature is Gemini-only (consensus applies it to Gemini only). There is no Codex reasoning-effort option.
+Temperature is Gemini-only (consensus applies it to Gemini, never to Codex). There is no Codex reasoning-effort option.
 
 ## 2. Call the Tool
 
@@ -50,4 +50,4 @@ Report the review-file path, egress-manifest path, provider and model, file/toke
 
 ## Inline Options
 
-`temp`/`temperature` (Gemini, 0–1) · `maxInputTokens` · `maxOutputTokens` (Gemini) · `includeFiles` (comma-separated) · `allowExternalFiles` · `includeDeps`/`includeDependencies` · `includeTests` · `includeTypes` · `dryRun` · `focusAreas` (comma-separated). Reasoning effort is intentionally not configurable.
+`temp`/`temperature` (Gemini, 0–1) · `maxInputTokens` · `maxOutputTokens` (Gemini) · `includeFiles` (comma-separated) · `allowExternalFiles` · `includeDeps`/`includeDependencies` · `includeTests` · `includeTypes` · `dryRun` · `focusAreas` (comma-separated).
