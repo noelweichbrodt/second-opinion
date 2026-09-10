@@ -152,9 +152,10 @@ you've likely stopped one rung too low — state why rungs 1 and 2 don't apply.
 
 > **[IMPORTANT]** `repository.ts:42` returns `User | null`, forcing null checks in
 > all three callers (`handler.ts:78`, ...).
-> **Fix (altitude 1):** make `findUser` return `User` and signal the genuinely
-> missing case once (throw / `Result`) at the single point it can occur, so callers
-> stop re-checking. Prefer this over adding a fourth null guard.
+> **Fix (altitude 1):** at `repository.ts:42` (replace the signature), make
+> `findUser` return `User` and signal the genuinely missing case once (throw /
+> `Result`) at the single point it can occur, so callers stop re-checking. Prefer
+> this over adding a fourth null guard.
 
 ---
 
@@ -178,6 +179,13 @@ Every finding must reference specific code:
 - **[BLOCKING]**: Quote the code (`file:line` + exact snippet)
 - **[IMPORTANT]**: Reference `file:line` with explanation
 - **[NIT]** / **[SUGGESTION]**: At minimum, reference the file
+
+**Fixes carry an anchor too.** Evidence says where the problem shows; the fix must
+say where the edit lands — often a different file. Name the `file:line` you would
+change, whether that line is replaced or the code is inserted after it, and one
+anchor per site when the fix spans several. Confirm each anchor against the provided
+context; if the fix belongs in code you were not given, say so rather than guess a
+location.
 
 ## Feedback Style
 
@@ -263,12 +271,12 @@ When a branch diff is provided, only include issues introduced by the diff.
 **[BLOCKING]** Title
 - **Evidence**: `file:line` — quoted code
 - **Why**: Impact explanation
-- **Fix**: Suggested resolution
+- **Fix**: `file:line` (replace | insert after) — the resolution
 
 **[IMPORTANT]** Title
 - **Where**: `file:line`
 - **Why**: Explanation
-- **Fix**: Suggested resolution
+- **Fix**: `file:line` (replace | insert after) — the resolution
 
 **[NIT]** / **[SUGGESTION]** Title
 - **Where**: `file:line`
