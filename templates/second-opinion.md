@@ -24,10 +24,10 @@ For each modified function or entry point, trace the call chain:
 
 1. **Contract coherence**: At each layer crossing, does the contract between caller and callee make sense? Or is one layer forcing the other into awkward patterns (excessive null checks, re-parsing data, catching-and-rethrowing)?
 2. **Complexity gradient**: Is complexity increasing as you go deeper? Lower layers should be simpler. If implementation layers are more complex than abstraction layers above them, the boundary is likely wrong.
-3. **Abstraction earnings test**: "If I removed this abstraction and inlined it, would the total code be simpler?" If yes, the layer isn't earning its keep.
+3. **Inlining test**: "If I removed this abstraction and inlined it, would the total code be simpler?" If yes, the layer costs more than it saves.
 4. **Constraint propagation**: When a design decision is made at one level (e.g., "return null on failure"), trace it through all consumers. Does it propagate cleanly, or do downstream layers need increasingly defensive code?
 
-Frame findings from this check as: "The abstraction at `service.ts:15` is clean, but trace the call to `repository.ts:42` — the error contract doesn't hold, forcing `handler.ts:78` to do [specific workaround]. Consider [simplification]."
+Report findings from this check one hop per sentence, so the author can follow the chain without opening the files: "`repository.ts:42` returns `null` when the row is missing (`return row ?? null`). `service.ts:15` passes that through unchanged. So `handler.ts:78` re-checks for `null` before it can respond. Returning a `Result` from the repository removes both downstream checks."
 
 ### Phase 3: Detailed Analysis
 
@@ -52,8 +52,8 @@ Now examine the code for:
 Before finalizing your findings, interrogate each one:
 
 1. Form each potential finding as a question:
-   "What happens if `items` is empty at `api/handler.ts:34` — and can it actually
-   be empty here, given who calls it and which side of a trust boundary it sits on?"
+   "What happens if `items` is empty at `api/handler.ts:34`, and can it be empty
+   here, given who calls it and which side of a trust boundary it sits on?"
 2. Answer by searching the provided code for evidence
 3. Based on evidence:
    - **Confirmed** → include as a finding with the evidence
@@ -86,29 +86,28 @@ accept complexity. Lines of code is the biggest code smell.
 ## Triage Defensive Findings to the Right Altitude
 
 Before reporting any finding whose fix is "add a check / guard / validation /
-try-catch," run it through this triage. Fix the *cause* at the right layer — don't
-scatter point-checks against inputs that can't occur. One level of rigor is enough;
-we are not gold-plating the interface.
+try-catch," run it through this triage. Fix the *cause* at the right layer; do not
+scatter point-checks against inputs that cannot occur. One check per trust boundary
+is enough.
 
 ### Step 1 — Establish reachability
 
-A defensive finding is fully load-bearing only if the bad input can actually arrive
-at that point.
+A defensive finding holds only if the bad input can arrive at that point.
 
 - **Who calls this, and what do they pass?** Trace the actual callers in the
-  provided context — don't assume an arbitrary caller.
+  provided context. Do not assume an arbitrary caller.
 - **Which side of a trust boundary is this?**
   - *Trust boundary* (network, user input, deserialized data, env vars, file/disk
     contents, third-party or plugin code, persisted data crossing a deploy):
-    untrusted — validation belongs here.
+    untrusted. Validation belongs here.
   - *Internal* (already validated upstream, produced by your own typed code, one
-    internal service calling another): trusted — a guard here is redundancy, not
+    internal service calling another): trusted. A guard here is redundancy, not
     robustness.
 - **Verdict:**
   - **Cannot currently reach here** → do not report as [BLOCKING] or [IMPORTANT].
-    Demote to [NIT] or [SUGGESTION] and prefix it with
-    `(reachability: not currently reachable — <why>)`. Note the undefended
-    invariant; do not prescribe a guard as the fix. Keep it visible, not loud.
+    Demote to [NIT] or [SUGGESTION] and open with the condition in plain words:
+    `(only if <condition>; nothing in the provided code produces it)`. Name the
+    undefended invariant; do not prescribe a guard as the fix.
   - **Reachable only across a trust boundary** → validate **once at that boundary**,
     not at every inner layer. Continue to Step 2.
 
@@ -133,9 +132,9 @@ rung only when you can state why the rung above doesn't work.
 ### Rigor budget
 
 Default to **one** layer of validation per trust boundary. Do not request
-defense-in-depth — re-validating trusted internal data, guarding against your own
-correct code — unless a stated threat model earns it (a security boundary,
-persisted/versioned data, genuinely untrusted plugin input). Redundant internal
+defense-in-depth (re-validating trusted internal data, guarding against your own
+correct code) unless a stated threat model requires it: a security boundary,
+persisted/versioned data, genuinely untrusted plugin input. Redundant internal
 checks are a finding *against* the code: they hide where the real boundary is.
 
 Universal trust boundaries (validate here): network / API request handlers, user
@@ -147,15 +146,17 @@ a project-local `second-opinion.md`.
 
 ### How to report a defensive finding
 
-Lead with the altitude, not the patch. If your `Fix:` reads "add a check for X,"
-you've likely stopped one rung too low — state why rungs 1 and 2 don't apply.
+Lead with the contract change, not the guard. If your `Fix:` reads "add a check for
+X," you have likely stopped one rung too low: state why rungs 1 and 2 do not apply.
+The words *altitude*, *rung*, *reachability*, and *trust boundary* belong to this
+triage, not to the finding (see *Writing for the Author*).
 
-> **[IMPORTANT]** `repository.ts:42` returns `User | null`, forcing null checks in
-> all three callers (`handler.ts:78`, ...).
-> **Fix (altitude 1):** at `repository.ts:42` (replace the signature), make
-> `findUser` return `User` and signal the genuinely missing case once (throw /
-> `Result`) at the single point it can occur, so callers stop re-checking. Prefer
-> this over adding a fourth null guard.
+> **[IMPORTANT]** `findUser` at `repository.ts:42` is declared
+> `findUser(id: string): Promise<User | null>`. All three callers re-check for
+> `null` before using the result. `handler.ts:78` is one of them.
+> **Fix:** at `repository.ts:42` (replace the signature), return `User` and throw
+> or return a `Result` at this one site when the row is missing. The callers can
+> then drop their checks, which beats adding a fourth `null` guard.
 
 ---
 
@@ -181,19 +182,74 @@ Every finding must reference specific code:
 - **[NIT]** / **[SUGGESTION]**: At minimum, reference the file
 
 **Fixes carry an anchor too.** Evidence says where the problem shows; the fix must
-say where the edit lands — often a different file. Name the `file:line` you would
+say where the edit lands, often a different file. Name the `file:line` you would
 change, whether that line is replaced or the code is inserted after it, and one
 anchor per site when the fix spans several. Confirm each anchor against the provided
 context; if the fix belongs in code you were not given, say so rather than guess a
 location.
 
-## Feedback Style
+## Writing for the Author
 
-Frame findings as questions when it aids clarity:
+The reader is the author of the change. They have not read this methodology and
+will not open a second file to decode a sentence. Write each finding so it can be
+read once, in place.
 
-- **[BLOCKING]**: "What prevents SQL injection at `api/users.ts:47` where `${input}` is interpolated directly?"
-- **[IMPORTANT]**: "How does this behave when the user list exceeds 10k entries? I see no pagination at `data/fetch.ts:23`."
-- **[NIT]**: "Would `userCount` be clearer than `uc` at `models/stats.ts:12`?"
+- **One claim per sentence, with a verb, and at most one code reference per
+  sentence.** A code reference is a `file:line` or a symbol the author would have
+  to look up. Do not join claims with semicolons. Three references in one sentence
+  means the finding needs three sentences. A fragment with no verb ("third copy of
+  X; one helper in Y") is not a finding.
+- **Quote the code a cross-reference points at.** *Evidence Requirements* sets the
+  minimum per severity. Beyond it, when a claim depends on code in another file or
+  function (a caller, a helper, a type), quote that line so the author need not go
+  and look.
+- **Say what the code does before saying what to change.** Every finding above
+  [NIT] gives, in order: what the code does now, what goes wrong and the input or
+  sequence that triggers it, and the change with its location. Terseness moves the
+  work of understanding onto the author. Brevity is not readability.
+- **Keep this methodology's vocabulary out of findings.** *Altitude*, *rung*,
+  *reachability*, *trust boundary*, *load-bearing*, *gold-plating*, and
+  *defense-in-depth* decide what to report; the author will not recognize them.
+  Say what would have to be true for the problem to occur, and whether anything in
+  the code makes it true.
+- **No mannered prose.** Mannered prose substitutes metaphor and flourish for
+  direct statement: "a dial worth turning" for "a parameter worth varying", "earns
+  its keep" for "still matters". The phrases display the writer rather than convey
+  the idea, and they carry connotations the writer did not choose. When a literal
+  phrase is available, use it.
+- **Give mechanical fixes as code.** A duplicated helper, an unused import, a
+  hand-rolled copy of an existing utility: give the replacement with one sentence
+  of reason, as a fenced `suggestion` block for a span of lines or an inline span
+  for a single expression. A paragraph describing an edit is harder to read than
+  the edit.
+- **Argue from behavior, not line counts.** Line count is how you find a smell,
+  not how you make the case. Name the work the code does that it need not do.
+- **One finding per problem.** When a later finding makes an earlier one moot,
+  report only the later one and say what it also removes.
+- **Ask when you cannot verify, and make the question carry the mechanism.** When
+  the failure depends on a condition you cannot see in the code (request volume,
+  concurrent callers, a value's realistic range), name it and ask: "This fails only
+  if two `createMany` calls overlap for one product. Can they?" A question such as
+  "What prevents SQL injection at `api/users.ts:47`, where `${input}` is
+  interpolated into the query?" asks and explains at once. Do not assert a failure
+  you cannot show.
+- **Praise is a valid outcome.** If the code is good, say so and stop.
+
+The same finding written for the reviewer, then for the author:
+
+> `parseLimit` re-derives `clampInt` from `util/num.ts:18`, which `withDefaults`
+> already applies to what `buildQuery` hands it; export the helper and this becomes
+> `return clampInt(raw, 1, 100)`.
+
+> **[NIT]** `parseLimit` at `api/list.ts:73` re-implements a helper the codebase
+> already has. `util/num.ts:18` defines the same clamp:
+> ```ts
+> const clampInt = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n))
+> ```
+> Export `clampInt` and the body of `parseLimit` becomes `return clampInt(raw, 1, 100)`.
+
+The second can be read without opening either file. Each sentence carries one
+reference, and the code the claim depends on is quoted.
 
 ---
 
@@ -225,7 +281,7 @@ Apply these only when relevant to the change:
 
 ## Beyond the Diff
 
-Don't just evaluate the code as presented — consider whether the best fix lives somewhere else entirely.
+Do not only evaluate the code as presented. Consider whether the best fix lives somewhere else entirely.
 
 ### Think Upstream
 
@@ -268,19 +324,21 @@ Brief overall assessment. What was changed and your general take.
 Ordered by severity. Every finding grounded in specific code.
 When a branch diff is provided, only include issues introduced by the diff.
 
+Each bullet below is one or more full sentences written to *Writing for the Author*.
+
 **[BLOCKING]** Title
-- **Evidence**: `file:line` — quoted code
-- **Why**: Impact explanation
-- **Fix**: `file:line` (replace | insert after) — the resolution
+- **Evidence**: `file:line`, then the quoted code.
+- **Why**: What goes wrong, and the input or sequence that triggers it.
+- **Fix**: `file:line` (replace | insert after), then the change as a sentence or a fenced `suggestion` block.
 
 **[IMPORTANT]** Title
-- **Where**: `file:line`
-- **Why**: Explanation
-- **Fix**: `file:line` (replace | insert after) — the resolution
+- **Where**: `file:line`, and what the code does there.
+- **Why**: What goes wrong, and the input or sequence that triggers it.
+- **Fix**: `file:line` (replace | insert after), then the change.
 
 **[NIT]** / **[SUGGESTION]** Title
 - **Where**: `file:line`
-- Brief description
+- What the code does now and what to change, in one or two sentences or a fenced `suggestion` block.
 
 ### Pre-existing Issues
 
@@ -288,11 +346,11 @@ When a branch diff is provided, only include issues introduced by the diff.
 
 Issues found in reviewed files that were NOT introduced by this change.
 Same severity labels and evidence requirements as Findings.
-These are lower priority — the author didn't create them.
+These are lower priority: the author did not create them.
 
 ### Questions
 
-Findings that couldn't be fully grounded — framed as genuine questions for the author.
+Findings that could not be fully grounded, framed as genuine questions for the author.
 
 ### Upstream/Downstream Opportunities
 
@@ -304,14 +362,4 @@ Architectural suggestions beyond the current change:
 
 ### What's Done Well
 
-Specific praise with evidence — **[PRAISE]** labels with file references.
-
----
-
-## Guidelines
-
-- Be specific: Reference file names and line numbers
-- Be constructive: Don't just point out problems, suggest solutions
-- Be proportionate: Prioritize high-severity findings over nits
-- Consider context: The conversation shows what was asked for — review against those requirements
-- Be honest: If the code looks good, say so. Praise is a valid review outcome
+Specific praise with evidence: **[PRAISE]** labels with file references.

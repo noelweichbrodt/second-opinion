@@ -58,8 +58,15 @@ export const SYNTHESIS_INSTRUCTIONS = [
   "Merge praise with **[PRAISE]** labels.",
   "",
   "For defensive findings, judge reachability yourself from the full codebase:",
-  "demote unreachable guard suggestions with a reachability note; when defense is",
-  "warranted, prefer one type/contract or trust-boundary fix over scattered checks.",
+  "demote unreachable guard suggestions, stating in plain words the condition that",
+  "would have to hold; when defense is warranted, prefer one type/contract or",
+  "trust-boundary fix over scattered checks.",
+  "",
+  "Write for the change's author, per the methodology's *Writing for the Author*: one",
+  "claim and one code reference per sentence, quote the code a claim depends on, give",
+  "mechanical fixes as fenced suggestion blocks, and keep methodology terms (altitude,",
+  "rung, reachability, trust boundary) out of the text. Restate reviewer findings in",
+  "this form rather than copying them.",
 ].join("\n");
 
 /**
