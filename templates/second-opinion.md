@@ -191,32 +191,49 @@ location.
 ## Writing for the Author
 
 The reader is the author of the change. They have not read this methodology and
-will not open a second file to decode a sentence. Write each finding so it can be
-read once, in place.
+will not open a second file to decode a sentence. Above all, speak plainly and
+clearly. Write to be understood, not to show what you know or how much you can
+cite. Write each finding so it can be read once, in place.
 
 - **One claim per sentence, with a verb, and at most one code reference per
   sentence.** A code reference is a `file:line` or a symbol the author would have
   to look up. Do not join claims with semicolons. Three references in one sentence
-  means the finding needs three sentences. A fragment with no verb ("third copy of
-  X; one helper in Y") is not a finding.
+  means the finding needs three sentences.
+- **No packed language.** Packed language compresses several claims into one
+  fragment or noun phrase: "third copy of X; one helper in Y", "handler null
+  re-check redundancy". A fragment with no verb is not a finding. Unpack it into
+  sentences that each say one thing.
+- **No jargon.** This methodology's vocabulary (*altitude*, *rung*,
+  *reachability*, *trust boundary*, *load-bearing*, *gold-plating*,
+  *defense-in-depth*) decides what to report. The author will not recognize it.
+  Say what would have to be true for the problem to occur, and whether anything
+  in the code makes it true. A named principle or pattern ("parse, don't
+  validate", "violates Liskov") is not an explanation either. Say what the code
+  should do here, and name the principle afterwards if at all.
+- **No mannered prose.** Mannered prose substitutes metaphor and flourish for
+  direct statement: "a dial worth turning" for "a parameter worth varying", "earns
+  its keep" for "still matters". The phrases display the writer rather than convey
+  the idea, and they carry connotations the writer did not choose. When a literal
+  phrase is available, use it.
+- **Use the passive when it reads more plainly.** A passive sentence puts the thing
+  under discussion first: "`limit` is parsed twice", "the promise is never
+  awaited". Do not invent an actor ("the code", "nothing", "the system") to avoid
+  one. "Nothing awaits the promise" says the same thing with more fuss. When the
+  actor matters, name it in the next sentence: "`sync.ts:30` calls `fetchAll`
+  without `await`."
 - **Quote the code a cross-reference points at.** *Evidence Requirements* sets the
   minimum per severity. Beyond it, when a claim depends on code in another file or
   function (a caller, a helper, a type), quote that line so the author need not go
   and look.
 - **Say what the code does before saying what to change.** Every finding above
   [NIT] gives, in order: what the code does now, what goes wrong and the input or
-  sequence that triggers it, and the change with its location. Terseness moves the
-  work of understanding onto the author. Brevity is not readability.
-- **Keep this methodology's vocabulary out of findings.** *Altitude*, *rung*,
-  *reachability*, *trust boundary*, *load-bearing*, *gold-plating*, and
-  *defense-in-depth* decide what to report; the author will not recognize them.
-  Say what would have to be true for the problem to occur, and whether anything in
-  the code makes it true.
-- **No mannered prose.** Mannered prose substitutes metaphor and flourish for
-  direct statement: "a dial worth turning" for "a parameter worth varying", "earns
-  its keep" for "still matters". The phrases display the writer rather than convey
-  the idea, and they carry connotations the writer did not choose. When a literal
-  phrase is available, use it.
+  sequence that triggers it, and the change with its location. Be concise by
+  cutting words, not steps. Terseness moves the work of understanding onto the
+  author. Brevity is not readability.
+- **List parallel items. Keep a chain of reasoning in prose.** Three affected
+  callers, four steps of a fix, two options: introduce them in one short sentence,
+  then give one bullet each. A cause-and-effect chain stays in sentences, one hop
+  each, as in Phase 2. A table holds numbers, not prose.
 - **Give mechanical fixes as code.** A duplicated helper, an unused import, a
   hand-rolled copy of an existing utility: give the replacement with one sentence
   of reason, as a fenced `suggestion` block for a span of lines or an inline span

@@ -62,11 +62,13 @@ export const SYNTHESIS_INSTRUCTIONS = [
   "would have to hold; when defense is warranted, prefer one type/contract or",
   "trust-boundary fix over scattered checks.",
   "",
-  "Write for the change's author, per the methodology's *Writing for the Author*: one",
-  "claim and one code reference per sentence, quote the code a claim depends on, give",
-  "mechanical fixes as fenced suggestion blocks, and keep methodology terms (altitude,",
-  "rung, reachability, trust boundary) out of the text. Restate reviewer findings in",
-  "this form rather than copying them.",
+  "Write for the change's author, per the methodology's *Writing for the Author*.",
+  "Speak plainly: no jargon, mannered prose, or packed language, and no methodology",
+  "terms (altitude, rung, reachability, trust boundary). One claim and at most one code",
+  "reference per sentence. A passive sentence is fine when it reads more plainly.",
+  "Quote the code a claim depends on. Give mechanical fixes as fenced suggestion blocks.",
+  "Introduce parallel items in one sentence, then list them. Restate reviewer findings",
+  "in this form rather than copying them.",
 ].join("\n");
 
 /**
